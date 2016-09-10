@@ -1,0 +1,38 @@
+config:
+    smtp:
+        username: username
+        password: password
+        headers:
+            from: from@email
+            to: team@email
+            subject: >
+                [%s - %s], Service, Status
+
+services:
+    service 1:
+        # url
+        url: 'http...'
+
+        expect:
+            status: 200
+            if_not:
+                notify: yes
+
+        # if status
+        if_status:
+            500:
+                cmd: sv restart .
+            404:
+                cmd: sv restart .
+                notify: yes
+
+        # if header
+        if_header:
+            x-db-kaputt:
+                cmd: sv restart
+            x-amqp-kaputt:
+                cmd: sv restart
+                notify: you@abc.com
+
+    service 2:
+        seconds: 30

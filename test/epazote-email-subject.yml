@@ -1,0 +1,11 @@
+config:
+    smtp:
+        server: smtp.domain.tld
+        headers:
+            to: ops@domain.tld
+
+services:
+    service X:
+        test: pgrep nginx
+        if_not:
+            notify: yes

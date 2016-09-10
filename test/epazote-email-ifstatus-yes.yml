@@ -1,0 +1,17 @@
+config:
+    smtp:
+        headers:
+            from: from@email
+            subject: >
+                [%s - %s], Service, Status
+
+services:
+    service 1:
+        url: 'http...'
+
+        expect:
+            status: 200
+
+        if_status:
+            502:
+                notify: yes

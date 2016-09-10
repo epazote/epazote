@@ -1,0 +1,8 @@
+service 1:
+    url: 'http...'
+    timeout: 5
+
+    # check every (only use 1)
+    seconds: 30
+    minutes: 1
+    hours: 1

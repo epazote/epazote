@@ -1,0 +1,18 @@
+config:
+    smtp:
+        username: username
+        password: password
+        server: smtp server
+        port: 587
+        headers:
+            from: from@email
+            subject: name, because
+
+services:
+    service 1:
+        url: 'http...'
+
+        expect:
+            status: 200
+            if_not:
+                notify: yes
