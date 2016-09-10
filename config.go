@@ -61,7 +61,7 @@ type Service struct {
 	Follow        bool              `yaml:",omitempty" json:"-"`
 	Insecure      bool              `yaml:",omitempty" json:"-"`
 	Stop          int64             `yaml:",omitempty" json:"-"`
-	Threshold     Threshold         `yaml:",omitempty" json:"threshold,omitempty"`
+	Threshold     Threshold         `yaml:",omitempty" json:"-"`
 	Timeout       int               `yaml:",omitempty" json:"-"`
 	IfStatus      map[int]Action    `yaml:"if_status,omitempty" json:"-"`
 	IfHeader      map[string]Action `yaml:"if_header,omitempty" json:"-"`
