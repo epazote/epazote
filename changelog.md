@@ -1,6 +1,9 @@
 Changelog
 =========
 
+## 2.0.0
+- In progress
+
 ## 1.5.2
 - fallback to ``sh`` if no ``$SHELL`` found.
 

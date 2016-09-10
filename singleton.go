@@ -1,8 +1,9 @@
 package epazote
 
 import (
-	sk "github.com/nbari/epazote/scheduler"
 	"sync"
+
+	sk "github.com/epazote/scheduler"
 )
 
 var instance *sk.Scheduler
