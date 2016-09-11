@@ -1,8 +1,12 @@
 package epazote
 
-import "regexp"
+import (
+	"regexp"
+	"sync"
+)
 
 type Epazote struct {
+	sync.Mutex
 	Config   Config
 	Services Services
 	debug    bool
@@ -47,7 +51,7 @@ type Service struct {
 	Header        map[string]string `yaml:",omitempty" json:"-"`
 	Follow        bool              `yaml:",omitempty" json:"-"`
 	Insecure      bool              `yaml:",omitempty" json:"-"`
-	Stop          int64             `yaml:",omitempty" json:"-"`
+	Stop          int               `yaml:",omitempty" json:"-"`
 	Threshold     Threshold         `yaml:",omitempty" json:"-"`
 	Timeout       int               `yaml:",omitempty" json:"-"`
 	IfStatus      map[int]Action    `yaml:"if_status,omitempty" json:"-"`
@@ -56,7 +60,7 @@ type Service struct {
 	Test          `yaml:",inline" json:",omitempty"`
 	Every         `yaml:",inline" json:"-"`
 	Expect        Expect `json:"-"`
-	status        int64
+	status        int
 	action        *Action
 	retryCount    int
 }
@@ -64,6 +68,7 @@ type Service struct {
 type Threshold struct {
 	Healthy   int `yaml:",omitempty"`
 	Unhealthy int `yaml:",omitempty"`
+	healthy   int
 }
 
 type Expect struct {

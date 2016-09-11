@@ -1,8 +1,6 @@
 package epazote
 
-import (
-	"testing"
-)
+import "testing"
 
 func TestConfigNew(t *testing.T) {
 	var testTable = []struct {
@@ -14,7 +12,7 @@ func TestConfigNew(t *testing.T) {
 		{"test/epazote.yml", false},
 	}
 	for _, tt := range testTable {
-		_, err := New(tt.yml)
+		c, err := New(tt.yml)
 		if tt.expected {
 			if err == nil {
 				t.Fatal(err)
@@ -23,6 +21,11 @@ func TestConfigNew(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+		}
+		if c != nil {
+			expect(t, len(c.Services), 2)
+			expect(t, c.Services["service 1"].Threshold.Healthy, 2)
+			expect(t, c.Services["service 1"].Threshold.Unhealthy, 2)
 		}
 	}
 }

@@ -1,13 +1,14 @@
 package epazote
 
 import (
-	"gopkg.in/yaml.v2"
 	"log"
 	"os"
 	"os/signal"
 	"runtime"
 	"syscall"
 	"time"
+
+	"gopkg.in/yaml.v2"
 )
 
 func (self *Epazote) Block() {

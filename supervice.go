@@ -14,7 +14,7 @@ import (
 )
 
 // Do, execute the command in the if_not block
-func (self *Epazote) Do(cmd string, skip bool) string {
+func (e *Epazote) Do(cmd string, skip bool) string {
 	if skip {
 		return "Skipping cmd"
 	}
@@ -33,7 +33,7 @@ func (self *Epazote) Do(cmd string, skip bool) string {
 }
 
 // Supervice check services
-func (self *Epazote) Supervice(s *Service) func() {
+func (e *Epazote) Supervice(s *Service) func() {
 	return func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -42,7 +42,7 @@ func (self *Epazote) Supervice(s *Service) func() {
 		}()
 
 		// Mailman instance
-		m := NewMailMan(&self.Config.SMTP)
+		m := NewMailMan(&e.Config.SMTP)
 
 		// skip "do cmd", to avoid a loop
 		skip := false
@@ -57,17 +57,17 @@ func (self *Epazote) Supervice(s *Service) func() {
 			if sh := os.Getenv("SHELL"); sh != "" {
 				shell = sh
 			}
-			if self.debug {
+			if e.debug {
 				log.Printf("Service: %q, SHELL: %q, Test cmd args: %s", shell, s.Name, s.Test.Test)
 			}
 			cmd := exec.Command(shell, "-c", s.Test.Test)
 			var out bytes.Buffer
 			cmd.Stdout = &out
 			if err := cmd.Run(); err != nil {
-				self.Report(m, s, &s.Test.IfNot, nil, 1, 0, fmt.Sprintf("Test cmd: %s", err), self.Do(s.Test.IfNot.Cmd, skip))
+				e.Report(m, s, &s.Test.IfNot, nil, 1, 0, fmt.Sprintf("Test cmd: %s", err), e.Do(s.Test.IfNot.Cmd, skip))
 				return
 			}
-			self.Report(m, s, nil, nil, 0, 0, fmt.Sprintf("Test cmd: %s", out.String()), "")
+			e.Report(m, s, nil, nil, 0, 0, fmt.Sprintf("Test cmd: %s", out.String()), "")
 			return
 		}
 
@@ -84,7 +84,7 @@ func (self *Epazote) Supervice(s *Service) func() {
 			return attempt < s.RetryLimit, err
 		})
 		if err != nil {
-			self.Report(m, s, &s.Expect.IfNot, res, 1, 0, fmt.Sprintf("GET: %s", err), self.Do(s.Expect.IfNot.Cmd, skip))
+			e.Report(m, s, &s.Expect.IfNot, res, 1, 0, fmt.Sprintf("GET: %s", err), e.Do(s.Expect.IfNot.Cmd, skip))
 			return
 		}
 
@@ -104,10 +104,10 @@ func (self *Epazote) Supervice(s *Service) func() {
 			}
 			r := s.Expect.body.FindString(string(body))
 			if r == "" {
-				self.Report(m, s, &s.Expect.IfNot, res, 1, res.StatusCode, fmt.Sprintf("Body no regex match: %s", s.Expect.body.String()), self.Do(s.Expect.IfNot.Cmd, skip))
+				e.Report(m, s, &s.Expect.IfNot, res, 1, res.StatusCode, fmt.Sprintf("Body no regex match: %s", s.Expect.body.String()), e.Do(s.Expect.IfNot.Cmd, skip))
 				return
 			}
-			self.Report(m, s, nil, res, 0, res.StatusCode, fmt.Sprintf("Body regex match: %s", r), "")
+			e.Report(m, s, nil, res, 0, res.StatusCode, fmt.Sprintf("Body regex match: %s", r), "")
 			return
 		} else if s.ReadLimit > 0 {
 			chunkedBody, err := ioutil.ReadAll(io.LimitReader(res.Body, s.ReadLimit))
@@ -116,7 +116,7 @@ func (self *Epazote) Supervice(s *Service) func() {
 				log.Printf("Could not read Body for service %q, read_limit %d, Error: %s", Red(s.Name), s.ReadLimit, err)
 				return
 			}
-			if self.debug {
+			if e.debug {
 				log.Printf("Service %q, read_limit: %d, Body: \n%s", s.Name, s.ReadLimit, chunkedBody)
 			}
 		} else {
@@ -126,9 +126,9 @@ func (self *Epazote) Supervice(s *Service) func() {
 
 		// if_status
 		if s.IfStatus != nil {
-			// chefk if there is an Action for the returned StatusCode
+			// check if there is an Action for the returned StatusCode
 			if a, ok := s.IfStatus[res.StatusCode]; ok {
-				self.Report(m, s, &a, res, 1, res.StatusCode, fmt.Sprintf("Status: %d", res.StatusCode), self.Do(a.Cmd, skip))
+				e.Report(m, s, &a, res, 1, res.StatusCode, fmt.Sprintf("Status: %d", res.StatusCode), e.Do(a.Cmd, skip))
 				return
 			}
 		}
@@ -140,7 +140,7 @@ func (self *Epazote) Supervice(s *Service) func() {
 			for k, a := range s.IfHeader {
 				if res.Header.Get(k) != "" {
 					r = true
-					self.Report(m, s, &a, res, 1, res.StatusCode, fmt.Sprintf("Header: %s", k), self.Do(a.Cmd, skip))
+					e.Report(m, s, &a, res, 1, res.StatusCode, fmt.Sprintf("Header: %s", k), e.Do(a.Cmd, skip))
 				}
 			}
 			if r {
@@ -150,7 +150,7 @@ func (self *Epazote) Supervice(s *Service) func() {
 
 		// Status
 		if res.StatusCode != s.Expect.Status {
-			self.Report(m, s, &s.Expect.IfNot, res, 1, res.StatusCode, fmt.Sprintf("Status: %d", res.StatusCode), self.Do(s.Expect.IfNot.Cmd, skip))
+			e.Report(m, s, &s.Expect.IfNot, res, 1, res.StatusCode, fmt.Sprintf("Status: %d", res.StatusCode), e.Do(s.Expect.IfNot.Cmd, skip))
 			return
 		}
 
@@ -158,7 +158,7 @@ func (self *Epazote) Supervice(s *Service) func() {
 		if s.Expect.Header != nil {
 			for k, v := range s.Expect.Header {
 				if !strings.HasPrefix(res.Header.Get(k), v) {
-					self.Report(m, s, &s.Expect.IfNot, res, 1, res.StatusCode, fmt.Sprintf("Header: %s: %s", k, v), self.Do(s.Expect.IfNot.Cmd, skip))
+					e.Report(m, s, &s.Expect.IfNot, res, 1, res.StatusCode, fmt.Sprintf("Header: %s: %s", k, v), e.Do(s.Expect.IfNot.Cmd, skip))
 					return
 				}
 			}
@@ -166,7 +166,7 @@ func (self *Epazote) Supervice(s *Service) func() {
 
 		// fin if all is ok
 		if res.StatusCode == s.Expect.Status {
-			self.Report(m, s, nil, res, 0, res.StatusCode, fmt.Sprintf("Status: %d", res.StatusCode), "")
+			e.Report(m, s, nil, res, 0, res.StatusCode, fmt.Sprintf("Status: %d", res.StatusCode), "")
 			return
 		}
 	}

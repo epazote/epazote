@@ -183,6 +183,6 @@ func TestScanParseScanLast(t *testing.T) {
 
 	expect(t, len(sk.Schedulers), 1)
 	expect(t, 402, s["service 1"].Expect.Status)
-	expect(t, int64(3), s["service 1"].status)
+	expect(t, 3, s["service 1"].status)
 	expect(t, "matilde", s["service 1"].action.Cmd)
 }
