@@ -1,4 +1,4 @@
-ENVIROMENT.PHONY: all get test clean build cover compile goxc bintray
+.PHONY: all get test clean build cover compile goxc bintray
 
 GO ?= go
 BIN_NAME=epazote
@@ -13,14 +13,8 @@ get:
 	${GO} get
 
 build: get
-# make build DEBUG=true
-	@if test -n "${DEBUG}"; then \
-	${GO} get -u github.com/mailgun/godebug; \
-	${GOPATH}/bin/godebug build -instrument="github.com/epazote/epazote/..." -o ${BIN_NAME}.debug cmd/epazote/main.go; \
-	else \
-	${GO} get -u gopkg.in/yaml.v2; \
-	${GO} build -ldflags "-X main.version=${VERSION}" -o ${BIN_NAME} cmd/epazote/main.go; \
-	fi;
+	${GO} get -u gopkg.in/yaml.v2;
+	${GO} build -ldflags "-X main.version=${VERSION}" -o ${BIN_NAME} cmd/epazote/main.go;
 
 clean:
 	@rm -rf ${BIN_NAME} ${BIN_NAME}.debug *.out build debian

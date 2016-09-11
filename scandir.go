@@ -8,15 +8,15 @@ import (
 )
 
 // Scan return func() to work with the scheduler
-func (self *Epazote) Scan(dir string) func() {
+func (e *Epazote) Scan(dir string) func() {
 	return func() {
-		self.search(dir)
+		e.search(dir)
 	}
 }
 
 // search walk through defined paths
-func (self *Epazote) search(root string) error {
-	if self.debug {
+func (e *Epazote) search(root string) error {
+	if e.debug {
 		log.Printf("Starting scan in: %s", root)
 	}
 	find := func(path string, f os.FileInfo, err error) error {
@@ -66,22 +66,22 @@ func (self *Epazote) search(root string) error {
 				}
 
 				// Add/Update existing services
-				if _, ok := self.Services[k]; !ok {
-					self.Services[k] = v
+				if _, ok := e.Services[k]; !ok {
+					e.Services[k] = v
 				} else {
-					last_status := self.Services[k].status
-					last_action := self.Services[k].action
-					self.Services[k] = v
-					self.Services[k].status = last_status
-					self.Services[k].action = last_action
+					last_status := e.Services[k].status
+					last_action := e.Services[k].action
+					e.Services[k] = v
+					e.Services[k].status = last_status
+					e.Services[k].action = last_action
 				}
 
-				if self.debug {
+				if e.debug {
 					log.Printf(Green("Found epazote.yml in path: %s updating/adding service: %q"), path, k)
 				}
 
 				// schedule service
-				sk.AddScheduler(k, GetInterval(60, v.Every), self.Supervice(self.Services[k]))
+				sk.AddScheduler(k, GetInterval(60, v.Every), e.Supervice(e.Services[k]))
 			}
 		}
 		return nil

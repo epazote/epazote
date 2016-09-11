@@ -1,8 +1,10 @@
 package epazote
 
 import (
+	"bytes"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"os"
 	"reflect"
 	"testing"
@@ -15,12 +17,11 @@ func TestScanReturnFunc(t *testing.T) {
 	ft := reflect.TypeOf(f).Kind()
 	if ft != reflect.Func {
 		t.Error("Expecting func()")
-	} else {
-		f()
 	}
 }
 
 func TestScanSearchNonexistentRoot(t *testing.T) {
+	log.SetOutput(ioutil.Discard)
 	s := new(Epazote)
 	err := s.search("nonexistent")
 	if err == nil {
@@ -61,6 +62,9 @@ func TestScanParseScanErr(t *testing.T) {
 }
 
 func TestScanParseScanSearchOk(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	log.SetFlags(0)
 	dir := "./"
 	prefix := "test-scan2-"
 
@@ -95,7 +99,9 @@ func TestScanParseScanSearchOk(t *testing.T) {
 }
 
 func TestScanParseScanSearchBadRegex(t *testing.T) {
-	buf.Reset()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	log.SetFlags(0)
 	dir := "./"
 	prefix := "test-scan2-"
 
@@ -126,16 +132,13 @@ func TestScanParseScanSearchBadRegex(t *testing.T) {
 		t.Error("Expecting log.Println error")
 	}
 	sk := GetScheduler()
-
-	if len(sk.Schedulers) != 1 {
-		t.Error("Expecting 1")
-	}
-
-	buf.Reset()
+	expect(t, len(sk.Schedulers), 1)
 }
 
 func TestScanParseScanLast(t *testing.T) {
-	buf.Reset()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	log.SetFlags(0)
 	dir := "./"
 	prefix := "test-scan2-"
 
@@ -178,21 +181,8 @@ func TestScanParseScanLast(t *testing.T) {
 
 	sk := GetScheduler()
 
-	if len(sk.Schedulers) != 1 {
-		t.Error("Expecting 1")
-	}
-
-	if s["service 1"].Expect.Status != 402 {
-		t.Errorf("Expecting status 402 got: %v", s["service 1"].Expect.Status)
-	}
-
-	if s["service 1"].status != 3 {
-		t.Errorf("Expecting status 3 got: %v", s["service 1"].status)
-	}
-
-	if s["service 1"].action.Cmd != "matilde" {
-		t.Errorf("Expecting Cmd = matilde got: %v", s["service 1"].action.Cmd)
-	}
-
-	buf.Reset()
+	expect(t, len(sk.Schedulers), 1)
+	expect(t, 402, s["service 1"].Expect.Status)
+	expect(t, int64(3), s["service 1"].status)
+	expect(t, "matilde", s["service 1"].action.Cmd)
 }
