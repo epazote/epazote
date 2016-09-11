@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"mime"
 	"net/smtp"
 	"os"
 	"regexp"
@@ -76,6 +77,7 @@ func TestReport(t *testing.T) {
 		err string
 		r   Return
 		s   string
+		m   string
 	}{
 		{
 			&Action{Notify: "33test@ejemplo.org", Msg: []string{"OK", "NO OK"}, Emoji: []string{"1f621"}},
@@ -85,6 +87,7 @@ func TestReport(t *testing.T) {
 			"",
 			Return{1, 200, "because", "output"},
 			"Subject: =?UTF-8?b?8J+SqSAgW25hbWUsIGJlY2F1c2Vd?=",
+			"",
 		},
 		{
 			&Action{Notify: "yes", Msg: []string{"testing notifications"}},
@@ -96,6 +99,7 @@ func TestReport(t *testing.T) {
 			"send email fake error",
 			Return{1, 200, "because", "output"},
 			"Subject: =?UTF-8?b?8J+SqSAgW25hbWU6IG5hbWUgLSBleGl0IC0gdXJsIC0gYmVjYXVzZV0=?=",
+			"",
 		},
 		{
 			&Action{Notify: "yes", Msg: []string{"testing notifications"}, Emoji: []string{"0"}},
@@ -107,6 +111,67 @@ func TestReport(t *testing.T) {
 			"send email fake error",
 			Return{1, 200, "because", "output"},
 			"Subject: [s 1, because]",
+			"",
+		},
+		{
+			&Action{Notify: "yes", Msg: []string{"testing notifications"}, Emoji: []string{"1F621"}},
+			map[string]string{
+				"from":    "epazote@domain.tld",
+				"to":      "test-emoji@ejemplo.org",
+				"subject": "[_name_, _because_]",
+			},
+			"send email fake error",
+			Return{0, 200, "because", "output"},
+			"Subject: =?UTF-8?b?8J+YoSAgW3MgMSwgYmVjYXVzZV0=?=",
+			"",
+		},
+		{
+			&Action{Notify: "yes", Msg: []string{"testing notifications"}, Emoji: []string{"1f44c", "1f44e"}},
+			map[string]string{
+				"from":    "epazote@domain.tld",
+				"to":      "test-emoji@ejemplo.org",
+				"subject": "[_name_, _because_]",
+			},
+			"i love errors",
+			Return{0, 200, "because", "output"},
+			"Subject: =?UTF-8?b?8J+RjCAgW3MgMSwgYmVjYXVzZV0=?=",
+			"",
+		},
+		{
+			&Action{Notify: "yes", Msg: []string{"testing notifications"}, Emoji: []string{"1f44c", "1f44e"}},
+			map[string]string{
+				"from":    "epazote@domain.tld",
+				"to":      "test-emoji1@ejemplo.org",
+				"subject": "[_name_, _because_]",
+			},
+			"i eat errors",
+			Return{1, 200, "because", "output"},
+			"Subject: =?UTF-8?b?8J+RjiAgW3MgMSwgYmVjYXVzZV0=?=",
+			"",
+		},
+		{
+			&Action{Notify: "yes", Msg: []string{"msg-1", "msg-2"}},
+			map[string]string{
+				"from":    "epazote@domain.tld",
+				"to":      "test-msg1@ejemplo.org",
+				"subject": "[_name_, _because_]",
+			},
+			"",
+			Return{0, 200, "because", "output"},
+			"Subject: =?UTF-8?b?8J+MvyAgW3MgMSwgYmVjYXVzZV0=?=",
+			"msg-1",
+		},
+		{
+			&Action{Notify: "yes", Msg: []string{"msg-1", "msg-2"}},
+			map[string]string{
+				"from":    "epazote@domain.tld",
+				"to":      "test-msg2@ejemplo.org",
+				"subject": "[_name_, _because_]",
+			},
+			"",
+			Return{1, 200, "because", "output"},
+			"Subject: =?UTF-8?b?8J+SqSAgW3MgMSwgYmVjYXVzZV0=?=",
+			"msg-2",
 		},
 	}
 	var wg sync.WaitGroup
@@ -158,308 +223,21 @@ func TestReport(t *testing.T) {
 		re := regexp.MustCompile(`Subject.*`)
 		match := re.FindString(string(r.msg))
 		expect(t, tt.s, strings.TrimSpace(match))
-		// TODO
 
-		os.Remove(tmpfile.Name())
+		u := strings.Split(match, ": ")
+		u[1] = strings.TrimSpace(u[1])
+		dec := new(mime.WordDecoder)
+		header, err := dec.DecodeHeader(u[1])
+		if err != nil {
+			t.Error(err)
+		}
+		t.Log(header)
+
+		if tt.m != "" {
+			index = bytes.Index(data, crlf)
+			expect(t, tt.m, strings.TrimSpace(string(data[:index])))
+		}
+
+		os.Remove(tmpfile.Name()) //clean up
 	}
 }
-
-/*
-func TestReportCustomEmoji(t *testing.T) {
-	var wg sync.WaitGroup
-	buf.Reset()
-	headers := map[string]string{
-		"from":    "epazote@domain.tld",
-		"to":      "test@ejemplo.org",
-		"subject": "[_name_, _because_]",
-	}
-	c := Email{"username", "password", "server", 587, headers, true}
-	f, r := mockSend(errors.New("I love errors"), &wg)
-	sender := &mailMan{&c, f}
-	ss := &Service{
-		Name: "s 1",
-		URL:  "http://about.epazote.io",
-		Expect: Expect{
-			Status: 200,
-		},
-	}
-	a := &Action{Notify: "yes", Msg: []string{"testing notifications"}, Emoji: []string{"1F621"}}
-	e := &Epazote{}
-	e.Config.SMTP = c
-
-	wg.Add(1)
-	e.Report(sender, ss, a, nil, 0, 200, "because", "output")
-	wg.Wait()
-
-	if r.addr != "server:587" {
-		t.Errorf("Expecting %q got %q", "server:587", r.addr)
-	}
-	if r.from != "epazote@domain.tld" {
-		t.Errorf("Expecting %q got %q", "epazote@domain.tld", r.from)
-	}
-	if r.to[0] != "test@ejemplo.org" {
-		t.Errorf("Expecting %q got %q", "test@ejemplo.org", r.to[0])
-	}
-
-	crlf := []byte("\r\n\r\n")
-	index := bytes.Index(r.msg, crlf)
-
-	data := r.msg[index+len(crlf):]
-
-	data, err := base64.StdEncoding.DecodeString(string(data))
-	if err != nil {
-		t.Error(err)
-	}
-
-	if buf.Len() < 10 {
-		t.Errorf("buf len not matching, got: %q", buf)
-	}
-
-	re := regexp.MustCompile(`Subject.*`)
-	match := re.FindString(string(r.msg))
-	u := strings.Split(match, ": ")
-	u[1] = strings.TrimSpace(u[1])
-	dec := new(mime.WordDecoder)
-	header, err := dec.DecodeHeader(u[1])
-	if err != nil {
-		t.Error(err)
-	}
-	x := fmt.Sprintf("%x", header)
-	if x != "f09f98a120205b7320312c20626563617573655d" {
-		t.Error(x)
-	}
-}
-
-func TestReportEmoji0(t *testing.T) {
-	var wg sync.WaitGroup
-	buf.Reset()
-	headers := map[string]string{
-		"from":    "epazote@domain.tld",
-		"to":      "test@ejemplo.org",
-		"subject": "[_name_, _because_]",
-	}
-	c := Email{"username", "password", "server", 587, headers, true}
-	f, r := mockSend(errors.New("I love errors"), &wg)
-	sender := &mailMan{&c, f}
-	ss := &Service{
-		Name: "s 1",
-		URL:  "http://about.epazote.io",
-		Expect: Expect{
-			Status: 200,
-		},
-	}
-	a := &Action{Notify: "yes", Msg: []string{"testing notifications"}, Emoji: []string{"1f44c", "1f44e"}}
-	e := &Epazote{}
-	e.Config.SMTP = c
-
-	wg.Add(1)
-	e.Report(sender, ss, a, nil, 0, 200, "because", "output")
-	wg.Wait()
-
-	if r.addr != "server:587" {
-		t.Errorf("Expecting %q got %q", "server:587", r.addr)
-	}
-	if r.from != "epazote@domain.tld" {
-		t.Errorf("Expecting %q got %q", "epazote@domain.tld", r.from)
-	}
-	if r.to[0] != "test@ejemplo.org" {
-		t.Errorf("Expecting %q got %q", "test@ejemplo.org", r.to[0])
-	}
-
-	crlf := []byte("\r\n\r\n")
-	index := bytes.Index(r.msg, crlf)
-
-	data := r.msg[index+len(crlf):]
-
-	data, err := base64.StdEncoding.DecodeString(string(data))
-	if err != nil {
-		t.Error(err)
-	}
-
-	if buf.Len() < 10 {
-		t.Errorf("buf len not matching, got: %q", buf)
-	}
-
-	re := regexp.MustCompile(`Subject.*`)
-	match := re.FindString(string(r.msg))
-	u := strings.Split(match, ": ")
-	u[1] = strings.TrimSpace(u[1])
-	dec := new(mime.WordDecoder)
-	header, err := dec.DecodeHeader(u[1])
-	if err != nil {
-		t.Error(err)
-	}
-	x := fmt.Sprintf("%x", header)
-	if x != "f09f918c20205b7320312c20626563617573655d" {
-		t.Errorf("Expecting: %s, Got: %s", "f09f918c20205b7320312c20626563617573655d", x)
-	}
-
-}
-
-func TestReportEmoji1(t *testing.T) {
-	var wg sync.WaitGroup
-	buf.Reset()
-	headers := map[string]string{
-		"from":    "epazote@domain.tld",
-		"to":      "test@ejemplo.org",
-		"subject": "[_name_, _because_]",
-	}
-	c := Email{"username", "password", "server", 587, headers, true}
-	f, r := mockSend(errors.New("I love errors"), &wg)
-	sender := &mailMan{&c, f}
-	ss := &Service{
-		Name: "s 1",
-		URL:  "http://about.epazote.io",
-		Expect: Expect{
-			Status: 200,
-		},
-	}
-	a := &Action{Notify: "yes", Msg: []string{"testing notifications"}, Emoji: []string{"1f44c", "1f44e"}}
-	e := &Epazote{}
-	e.Config.SMTP = c
-
-	wg.Add(1)
-	e.Report(sender, ss, a, nil, 1, 200, "because", "output")
-	wg.Wait()
-
-	if r.addr != "server:587" {
-		t.Errorf("Expecting %q got %q", "server:587", r.addr)
-	}
-	if r.from != "epazote@domain.tld" {
-		t.Errorf("Expecting %q got %q", "epazote@domain.tld", r.from)
-	}
-	if r.to[0] != "test@ejemplo.org" {
-		t.Errorf("Expecting %q got %q", "test@ejemplo.org", r.to[0])
-	}
-
-	crlf := []byte("\r\n\r\n")
-	index := bytes.Index(r.msg, crlf)
-
-	data := r.msg[index+len(crlf):]
-
-	data, err := base64.StdEncoding.DecodeString(string(data))
-	if err != nil {
-		t.Error(err)
-	}
-
-	if buf.Len() < 10 {
-		t.Errorf("buf len not matching, got: %q", buf)
-	}
-
-	re := regexp.MustCompile(`Subject.*`)
-	match := re.FindString(string(r.msg))
-	u := strings.Split(match, ": ")
-	u[1] = strings.TrimSpace(u[1])
-	dec := new(mime.WordDecoder)
-	header, err := dec.DecodeHeader(u[1])
-	if err != nil {
-		t.Error(err)
-	}
-	x := fmt.Sprintf("%x", header)
-	if x != "f09f918e20205b7320312c20626563617573655d" {
-		t.Errorf("Expecting: %s, Got: %s", "f09f918e20205b7320312c20626563617573655d", x)
-	}
-}
-
-func TestReportMsg0(t *testing.T) {
-	var wg sync.WaitGroup
-	buf.Reset()
-	headers := map[string]string{
-		"from":    "epazote@domain.tld",
-		"to":      "test@ejemplo.org",
-		"subject": "[_name_, _because_]",
-	}
-	c := Email{"username", "password", "server", 587, headers, true}
-	f, r := mockSend(errors.New("I love errors"), &wg)
-	sender := &mailMan{&c, f}
-	ss := &Service{
-		Name: "s 1",
-		URL:  "http://about.epazote.io",
-		Expect: Expect{
-			Status: 200,
-		},
-	}
-	a := &Action{Notify: "yes", Msg: []string{"msg-1", "msg-2"}}
-	e := &Epazote{}
-	e.Config.SMTP = c
-
-	wg.Add(1)
-	e.Report(sender, ss, a, nil, 0, 200, "because", "output")
-	wg.Wait()
-
-	if r.addr != "server:587" {
-		t.Errorf("Expecting %q got %q", "server:587", r.addr)
-	}
-	if r.from != "epazote@domain.tld" {
-		t.Errorf("Expecting %q got %q", "epazote@domain.tld", r.from)
-	}
-	if r.to[0] != "test@ejemplo.org" {
-		t.Errorf("Expecting %q got %q", "test@ejemplo.org", r.to[0])
-	}
-
-	crlf := []byte("\r\n\r\n")
-	index := bytes.Index(r.msg, crlf)
-
-	data := r.msg[index+len(crlf):]
-
-	data, err := base64.StdEncoding.DecodeString(string(data))
-	if err != nil {
-		t.Error(err)
-	}
-	index = bytes.Index(data, crlf)
-	if "msg-1" != strings.TrimSpace(string(data[:index])) {
-		t.Errorf("Expecfing: msg-2 Got: %s", string(data[:index]))
-	}
-}
-
-func TestReportMsg1(t *testing.T) {
-	var wg sync.WaitGroup
-	buf.Reset()
-	headers := map[string]string{
-		"from":    "epazote@domain.tld",
-		"to":      "test@ejemplo.org",
-		"subject": "[name, because]",
-	}
-	c := Email{"username", "password", "server", 587, headers, true}
-	f, r := mockSend(errors.New("I love errors"), &wg)
-	sender := &mailMan{&c, f}
-	ss := &Service{
-		Name: "s 1",
-		URL:  "http://about.epazote.io",
-		Expect: Expect{
-			Status: 200,
-		},
-	}
-	a := &Action{Notify: "yes", Msg: []string{"msg-1", "msg-2"}}
-	e := &Epazote{}
-	e.Config.SMTP = c
-
-	wg.Add(1)
-	e.Report(sender, ss, a, nil, 1, 200, "because", "output")
-	wg.Wait()
-
-	if r.addr != "server:587" {
-		t.Errorf("Expecting %q got %q", "server:587", r.addr)
-	}
-	if r.from != "epazote@domain.tld" {
-		t.Errorf("Expecting %q got %q", "epazote@domain.tld", r.from)
-	}
-	if r.to[0] != "test@ejemplo.org" {
-		t.Errorf("Expecting %q got %q", "test@ejemplo.org", r.to[0])
-	}
-
-	crlf := []byte("\r\n\r\n")
-	index := bytes.Index(r.msg, crlf)
-
-	data := r.msg[index+len(crlf):]
-
-	data, err := base64.StdEncoding.DecodeString(string(data))
-	if err != nil {
-		t.Error(err)
-	}
-	index = bytes.Index(data, crlf)
-	if "msg-2" != strings.TrimSpace(string(data[:index])) {
-		t.Errorf("Expecfing: msg-2 Got: %s", string(data[:index]))
-	}
-}
-*/
