@@ -75,6 +75,7 @@ func TestReport(t *testing.T) {
 		h   map[string]string
 		err string
 		r   Return
+		s   string
 	}{
 		{
 			&Action{Notify: "33test@ejemplo.org", Msg: []string{"OK", "NO OK"}, Emoji: []string{"1f621"}},
@@ -83,6 +84,7 @@ func TestReport(t *testing.T) {
 			},
 			"",
 			Return{1, 200, "because", "output"},
+			"Subject: =?UTF-8?b?8J+SqSAgW25hbWUsIGJlY2F1c2Vd?=",
 		},
 		{
 			&Action{Notify: "yes", Msg: []string{"testing notifications"}},
@@ -93,6 +95,7 @@ func TestReport(t *testing.T) {
 			},
 			"send email fake error",
 			Return{1, 200, "because", "output"},
+			"Subject: =?UTF-8?b?8J+SqSAgW25hbWU6IG5hbWUgLSBleGl0IC0gdXJsIC0gYmVjYXVzZV0=?=",
 		},
 		{
 			&Action{Notify: "yes", Msg: []string{"testing notifications"}, Emoji: []string{"0"}},
@@ -103,6 +106,7 @@ func TestReport(t *testing.T) {
 			},
 			"send email fake error",
 			Return{1, 200, "because", "output"},
+			"Subject: [s 1, because]",
 		},
 	}
 	var wg sync.WaitGroup
@@ -153,64 +157,10 @@ func TestReport(t *testing.T) {
 
 		re := regexp.MustCompile(`Subject.*`)
 		match := re.FindString(string(r.msg))
-		fmt.Printf("match = %+v\n", match)
-
+		expect(t, tt.s, strings.TrimSpace(match))
 		// TODO
 
 		os.Remove(tmpfile.Name())
-	}
-}
-
-func TestReporEmoji(t *testing.T) {
-	var wg sync.WaitGroup
-	tmpfile, err := ioutil.TempFile("", "TestReportEmoji")
-	if err != nil {
-		t.Error(err)
-	}
-	defer os.Remove(tmpfile.Name()) // clean up
-	log.SetOutput(tmpfile)
-	log.SetFlags(0)
-	headers := map[string]string{
-		"from":    "epazote@domain.tld",
-		"to":      "test@ejemplo.org",
-		"subject": "[_name_, _because_]",
-	}
-	c := Email{"username", "password", "server", 587, headers, true}
-	f, r := mockSend(errors.New("I love errors"), &wg)
-	sender := &mailMan{&c, f}
-	ss := &Service{
-		Name: "s 1",
-		URL:  "http://about.epazote.io",
-		Expect: Expect{
-			Status: 200,
-		},
-	}
-	a := &Action{Notify: "yes", Msg: []string{"testing notifications"}, Emoji: []string{"0"}}
-	e := &Epazote{}
-	e.Config.SMTP = c
-
-	wg.Add(1)
-	e.Report(sender, ss, a, nil, 1, 200, "because", "output")
-	wg.Wait()
-
-	expect(t, "server:587", r.addr)
-	expect(t, "epazote@domain.tld", r.from)
-	expect(t, "test@ejemplo.org", r.to[0])
-
-	crlf := []byte("\r\n\r\n")
-	index := bytes.Index(r.msg, crlf)
-	data := r.msg[index+len(crlf):]
-	data, err = base64.StdEncoding.DecodeString(string(data))
-	if err != nil {
-		t.Error(err)
-	}
-	//	b, _ := ioutil.ReadFile(tmpfile.Name())
-	//	expect(t, "ERROR attempting to send email: \"I love errors\"\n", string(b))
-
-	re := regexp.MustCompile(`Subject: \[s 1, because\]`)
-	match := re.FindString(string(r.msg))
-	if match == "" {
-		t.Errorf("No subject found, expecting: %q", `Subject: [s 1, because]`)
 	}
 }
 
