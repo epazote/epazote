@@ -3,6 +3,7 @@ package epazote
 import (
 	"bytes"
 	"crypto/tls"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -85,6 +86,12 @@ func HTTPGet(url string, follow, insecure bool, h map[string]string, timeout ...
 	var DefaultTransport http.RoundTripper = tr
 
 	res, err := DefaultTransport.RoundTrip(req)
+	fmt.Printf("res.TLS = %+v\n", res.TLS)
+	fmt.Printf("res.TLS.PeerCertificates = %+v\n", res.TLS.PeerCertificates)
+	for _, v := range res.TLS.PeerCertificates {
+		fmt.Printf("v.NotAfter = %+v\n", v.NotAfter)
+		fmt.Printf("v.Subject = %+v\n", v.Subject.CommonName)
+	}
 	if err != nil {
 		return nil, err
 	}
