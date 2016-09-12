@@ -67,26 +67,30 @@ func (e *Epazote) Report(m MailMan, s *Service, a *Action, r *http.Response, eCo
 	}
 
 	if e.debug {
-		// if available print the response headers
-		var rHeader []string
-		if r != nil {
-			for k, _ := range r.Header {
-				rHeader = append(rHeader, fmt.Sprintf("%s: %s", Yellow(k), r.Header.Get(k)))
-			}
-			cc := r.Cookies()
-			fmt.Printf("cc[0] = %#v\n", cc[0])
-			sort.Strings(rHeader)
-		}
-
-		// if Test show no headers
+		// if Test, show no headers
 		headers := ""
 		if s.URL != "" {
-			headers = fmt.Sprintf("%s:\n%s\n", Yellow("Headers"), strings.Join(rHeader, "\n"))
+			headers += Yellow("Response Headers:\n")
+			// if available print the response headers
+			var rHeader []string
+			if r != nil {
+				for k, _ := range r.Header {
+					if k == "Set-Cookie" {
+						rHeader = append(rHeader, fmt.Sprintf("%s: %s", Yellow(k), r.Cookies()))
+					} else {
+						rHeader = append(rHeader, fmt.Sprintf("%s: %s", Yellow(k), r.Header.Get(k)))
+					}
+				}
+				sort.Strings(rHeader)
+				for _, v := range rHeader {
+					headers += v + "\n"
+				}
+			}
 		}
 		if eCode == 0 {
-			log.Printf(Green("Report: %s")+", Count: %d\n"+headers, j, s.status)
+			log.Println(fmt.Sprintf("%s, Count: %d\n", Green(fmt.Sprintf("Report: %s", j)), s.status) + headers)
 		} else {
-			log.Printf(Red("Report: %s")+", Count: %d\n"+headers, j, s.status)
+			log.Println(fmt.Sprintf("%s, Count: %d\n", Red(fmt.Sprintf("Report: %s", j)), s.status) + headers)
 		}
 	}
 
