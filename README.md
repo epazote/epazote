@@ -1,4 +1,5 @@
 [![Download](https://api.bintray.com/packages/nbari/epazote/epazote/images/download.svg)](https://bintray.com/nbari/epazote/epazote/_latestVersion)
+
 [![Build Status](https://travis-ci.org/epazote/epazote.svg?branch=develop)](https://travis-ci.org/epazote/epazote)
 [![Coverage Status](https://coveralls.io/repos/github/epazote/epazote/badge.svg?branch=master)](https://coveralls.io/github/epazote/epazote?branch=master)
 
