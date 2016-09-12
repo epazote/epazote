@@ -35,6 +35,7 @@ func (e *Epazote) Log(s *Service, status []byte) {
 func (e *Epazote) Report(m MailMan, s *Service, a *Action, r *http.Response, eCode, status int, b, o string) {
 	e.Lock()
 	defer e.Unlock()
+
 	// set time
 	t := time.Now().UTC().Format(time.RFC3339)
 
@@ -65,7 +66,6 @@ func (e *Epazote) Report(m MailMan, s *Service, a *Action, r *http.Response, eCo
 		return
 	}
 
-	// debug
 	if e.debug {
 		// if available print the response headers
 		var rHeader []string
@@ -98,12 +98,26 @@ func (e *Epazote) Report(m MailMan, s *Service, a *Action, r *http.Response, eCo
 	}
 
 	// TODO threshold health/unhealth
+	var notify bool
+	if s.status > 0 {
+		if s.status <= 1 && s.Threshold.Unhealthy <= 1 {
+			notify = true
+		} else if s.status == s.Threshold.Unhealthy {
+			notify = true
+		}
+	} else {
+		if s.status == 0 && s.Threshold.Healthy == 0 {
+			notify = true
+		} else if s.Threshold.healthy == s.Threshold.Healthy {
+			notify = true
+		}
+	}
 
 	// keys to be used in mail or in HTTP
 	var parsed map[string]interface{}
 	err = json.Unmarshal(j, &parsed)
 	if err != nil {
-		log.Printf("Error creating email report status for service %q: %s", s.Name, err)
+		log.Printf("Error creating report status for service %q: %s", s.Name, err)
 		return
 	}
 
@@ -115,7 +129,7 @@ func (e *Epazote) Report(m MailMan, s *Service, a *Action, r *http.Response, eCo
 	sort.Strings(report_keys)
 
 	// Send email or call http only once (avoid spam)
-	if s.status <= 1 {
+	if notify {
 
 		// send email if action
 		if a.Notify != "" {
