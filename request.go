@@ -54,7 +54,7 @@ func HTTPGet(url string, follow, insecure bool, h map[string]string, timeout ...
 			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).Dial,
-		TLSHandshakeTimeout:   10 * time.Second,
+		TLSHandshakeTimeout:   60 * time.Second,
 		TLSClientConfig:       &tls.Config{InsecureSkipVerify: insecure},
 		ResponseHeaderTimeout: time.Duration(t) * time.Second,
 	}

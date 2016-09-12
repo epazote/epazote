@@ -143,7 +143,7 @@ func (e *Epazote) Report(m MailMan, s *Service, a *Action, r *http.Response, eCo
 
 		// send email if action
 		if a.Notify != "" {
-			// store action on status so that when the service recovers
+			// store action so that when the service recovers
 			// a notification can be sent to the previous recipients
 			s.action = a
 
