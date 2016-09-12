@@ -97,7 +97,7 @@ func (e *Epazote) Report(m MailMan, s *Service, a *Action, r *http.Response, eCo
 		return
 	}
 
-	// TODO threshold health/unhealth
+	// notify based on threshold health/unhealth
 	var notify bool
 	if s.status > 0 {
 		if s.status <= 1 && s.Threshold.Unhealthy <= 1 {
@@ -130,6 +130,10 @@ func (e *Epazote) Report(m MailMan, s *Service, a *Action, r *http.Response, eCo
 
 	// Send email or call http only once (avoid spam)
 	if notify {
+		if e.debug {
+			log.Printf("About to notify Thresholds healthy: %d unhealthy: %d",
+				s.Threshold.Healthy, s.Threshold.Unhealthy)
+		}
 
 		// send email if action
 		if a.Notify != "" {
