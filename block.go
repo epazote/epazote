@@ -11,20 +11,18 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
-func (self *Epazote) Block() {
-	// stop until signal received
+// Block stop until signal received
+func (e *Epazote) Block() {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
 	start := time.Now().UTC()
-
-	// loop forever
 	block := make(chan os.Signal)
-
 	signal.Notify(block, os.Interrupt, os.Kill, syscall.SIGTERM, syscall.SIGUSR1, syscall.SIGUSR2)
-
 	for {
 		signalType := <-block
 		switch signalType {
 		case syscall.SIGUSR1, syscall.SIGUSR2:
-			y, err := yaml.Marshal(&self)
+			y, err := yaml.Marshal(&e)
 			if err != nil {
 				log.Printf("Error: %v", err)
 			}
@@ -39,13 +37,18 @@ func (self *Epazote) Block() {
     Seconds in GC: %d
     Started on: %v
     Uptime: %v`
-
-			runtime.NumGoroutine()
-			s := new(runtime.MemStats)
-			runtime.ReadMemStats(s)
-
-			log.Printf("Config dump:\n%s---"+Green(l), y, runtime.NumGoroutine(), s.Alloc, s.TotalAlloc, s.Sys, s.Lookups, s.Mallocs, s.Frees, s.PauseTotalNs/1000000000, start.Format(time.RFC3339), time.Since(start))
-
+			log.Printf("Config dump:\n%s---"+Green(l),
+				y,
+				runtime.NumGoroutine(),
+				m.Alloc,
+				m.TotalAlloc,
+				m.Sys,
+				m.Lookups,
+				m.Mallocs,
+				m.Frees,
+				m.PauseTotalNs/1000000000,
+				start.Format(time.RFC3339),
+				time.Since(start))
 		default:
 			signal.Stop(block)
 			log.Printf("%q signal received.", signalType)

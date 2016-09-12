@@ -71,15 +71,17 @@ func (e *Epazote) Report(m MailMan, s *Service, a *Action, r *http.Response, eCo
 		var rHeader []string
 		if r != nil {
 			for k, _ := range r.Header {
-				rHeader = append(rHeader, fmt.Sprintf("%s: %s", k, r.Header.Get(k)))
+				rHeader = append(rHeader, fmt.Sprintf("%s: %s", Yellow(k), r.Header.Get(k)))
 			}
+			cc := r.Cookies()
+			fmt.Printf("cc[0] = %#v\n", cc[0])
 			sort.Strings(rHeader)
 		}
 
 		// if Test show no headers
 		headers := ""
 		if s.URL != "" {
-			headers = Yellow(fmt.Sprintf("Headers: \n%s\n", strings.Join(rHeader, "\n")))
+			headers = fmt.Sprintf("%s:\n%s\n", Yellow("Headers"), strings.Join(rHeader, "\n"))
 		}
 		if eCode == 0 {
 			log.Printf(Green("Report: %s")+", Count: %d\n"+headers, j, s.status)

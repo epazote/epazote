@@ -6,10 +6,10 @@ import (
 )
 
 type Epazote struct {
-	sync.Mutex
-	Config   Config
-	Services Services
-	debug    bool
+	sync.Mutex `yaml:"-", json:"-"`
+	Config     Config
+	Services   Services
+	debug      bool
 }
 
 type Config struct {

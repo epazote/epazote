@@ -12,25 +12,22 @@ import (
 var version, githash string
 
 func main() {
-	// f config file name
-	var f = flag.String("f", "epazote.yml", "Epazote configuration file.")
-	var c = flag.Bool("c", false, "Continue on errors.")
-	var d = flag.Bool("d", false, "Debug mode.")
-	var v = flag.Bool("v", false, fmt.Sprintf("Print version: %s", version))
+	var (
+		c = flag.Bool("c", false, "Continue on errors")
+		d = flag.Bool("d", false, "Debug mode")
+		f = flag.String("f", "epazote.yml", "Configuration `file.yml`")
+		v = flag.Bool("v", false, fmt.Sprintf("Print version: %s", version))
+	)
 
 	flag.Parse()
 
 	if *v {
-		if githash != "" {
-			fmt.Printf("%s+%s\n", version, githash)
-		} else {
-			fmt.Printf("%s\n", version)
-		}
+		fmt.Printf("%s\n", version)
 		os.Exit(0)
 	}
 
 	if _, err := os.Stat(*f); os.IsNotExist(err) {
-		fmt.Printf("Cannot read file: %s, use -h for more info.\n\n", *f)
+		fmt.Printf("Cannot read configuration file: %s, use -h for more info.\n\n", *f)
 		os.Exit(1)
 	}
 
