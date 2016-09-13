@@ -217,11 +217,13 @@ func (e *Epazote) Report(m MailMan, s *Service, a *Action, r *http.Response, eCo
 				if s.status == 0 {
 					return
 				}
-				if s.status == 1 {
-					h = a.HTTP[0]
-				}
+				h = a.HTTP[0]
 			} else {
-				h = a.HTTP[s.status]
+				if s.status == 0 {
+					h = a.HTTP[0]
+				} else {
+					h = a.HTTP[1]
+				}
 			}
 			if h.URL == "" {
 				return
