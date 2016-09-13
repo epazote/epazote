@@ -43,22 +43,22 @@ type Test struct {
 }
 
 type Service struct {
-	Name          string            `json:"name" yaml:"-"`
+	Name          string            `yaml:"-" json:"name"`
 	URL           string            `yaml:",omitempty" json:"url,omitempty"`
+	Follow        bool              `yaml:",omitempty" json:"-"`
+	Header        map[string]string `yaml:",omitempty" json:"-"`
+	IfHeader      map[string]Action `yaml:"if_header,omitempty" json:"-"`
+	IfStatus      map[int]Action    `yaml:"if_status,omitempty" json:"-"`
+	Insecure      bool              `yaml:",omitempty" json:"-"`
+	Log           string            `yaml:",omitempty" json:"-"`
+	ReadLimit     int64             `yaml:"read_limit,omitempty" json:"read_limit,omitempty"`
 	RetryInterval int               `yaml:"retry_interval,omitempty" json:"-"`
 	RetryLimit    int               `yaml:"retry_limit,omitempty" json:"-"`
-	ReadLimit     int64             `yaml:"read_limit,omitempty" json:"read_limit,omitempty"`
-	Header        map[string]string `yaml:",omitempty" json:"-"`
-	Follow        bool              `yaml:",omitempty" json:"-"`
-	Insecure      bool              `yaml:",omitempty" json:"-"`
 	Stop          int               `yaml:",omitempty" json:"-"`
 	Threshold     Threshold         `yaml:",omitempty" json:"-"`
 	Timeout       int               `yaml:",omitempty" json:"-"`
-	IfStatus      map[int]Action    `yaml:"if_status,omitempty" json:"-"`
-	IfHeader      map[string]Action `yaml:"if_header,omitempty" json:"-"`
-	Log           string            `yaml:",omitempty" json:"-"`
-	Test          `yaml:",inline" json:",omitempty"`
 	Every         `yaml:",inline" json:"-"`
+	Test          `yaml:",inline" json:",omitempty"`
 	Expect        Expect `json:"-"`
 	status        int
 	action        *Action
@@ -76,6 +76,7 @@ type Expect struct {
 	body   *regexp.Regexp
 	Header map[string]string `yaml:",omitempty"`
 	Status int               `yaml:",omitempty"`
+	SSL    SSL               `yaml:"ssl,omitempty" json:"-"`
 	IfNot  Action            `yaml:"if_not,omitempty"`
 }
 
@@ -92,4 +93,8 @@ type HTTP struct {
 	Method string            `yaml:",omitempty"`
 	Header map[string]string `yaml:",omitempty"`
 	Data   string            `yaml:",omitempty"`
+}
+
+type SSL struct {
+	Every `yaml:",inline"`
 }
