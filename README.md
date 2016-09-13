@@ -1,7 +1,7 @@
 [![Download](https://api.bintray.com/packages/nbari/epazote/epazote/images/download.svg)](https://bintray.com/nbari/epazote/epazote/_latestVersion)
 
 [![Build Status](https://travis-ci.org/epazote/epazote.svg?branch=develop)](https://travis-ci.org/epazote/epazote)
-[![Coverage Status](https://coveralls.io/repos/github/epazote/epazote/badge.svg?branch=master)](https://coveralls.io/github/epazote/epazote?branch=master)
+[![Coverage Status](https://coveralls.io/repos/github/epazote/epazote/badge.svg?branch=develop)](https://coveralls.io/github/epazote/epazote?branch=develop)
 
 # Epazote 🌿
 Automated Microservices Supervisor
@@ -55,10 +55,12 @@ language or syntax and simplifying the setup.
 ```yaml
 services:
     google:
-        url: http://www.google.com
+        url: https://www.google.com
         seconds: 5
         expect:
-            status: 200
+            status: 302
+            ssl:
+                hours: 72
             if_not:
                 cmd: echo -n "google down"
 ```
@@ -71,7 +73,10 @@ To supervise ``google`` you would run (basic.yml is a file containing the above 
 
 This basic setup will supervise every 5 seconds the service with name
 ``google``, it will do an HTTP GET to ``http://www.google.com`` and will expect
-an ``200 Status code`` if not,  it will ``echo -n "google down"``
+an ``302 Status code`` if not,  it will ``echo -n "google down"``
+
+The ``ssl: hours: 72`` means to send an alert if the certificate is about to
+expire in the next 72 hours.
 
 Extending the basic example for receiving notifications:
 
