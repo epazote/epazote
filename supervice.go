@@ -164,6 +164,17 @@ func (e *Epazote) Supervice(s *Service) func() {
 			}
 		}
 
+		// check SSL certificate expiration date
+		if res.TLS != nil {
+			for _, cert := range res.TLS.PeerCertificates {
+				expiresIn := int64(cert.NotAfter.Sub(time.Now().UTC()).Seconds())
+				if expiresIn <= 48 {
+					e.Report(m, s, nil, res, 1, res.StatusCode, fmt.Sprintf("cert: %q expires in: %d", cert.Subject.CommonName, cert.NotAfter), "")
+					return
+				}
+			}
+		}
+
 		// fin if all is ok
 		if res.StatusCode == s.Expect.Status {
 			e.Report(m, s, nil, res, 0, res.StatusCode, fmt.Sprintf("Status: %d", res.StatusCode), "")

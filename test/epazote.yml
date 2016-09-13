@@ -28,6 +28,10 @@ services:
             healthy: 2 # consecutive successes
             unhealthy: 2 # consecutive failures
 
+        # TODO
+        abce:
+            hours: 48
+
         expect:
             status: 200
             header:

@@ -32,7 +32,7 @@ func (e *Epazote) Log(s *Service, status []byte) {
 }
 
 // Report create report to send via log/email
-func (e *Epazote) Report(m MailMan, s *Service, a *Action, r *http.Response, eCode, status int, b, o string) {
+func (e *Epazote) Report(m MailMan, s *Service, a *Action, r *http.Response, eCode, sCode int, b, o string) {
 	e.Lock()
 	defer e.Unlock()
 
@@ -59,7 +59,7 @@ func (e *Epazote) Report(m MailMan, s *Service, a *Action, r *http.Response, eCo
 		Because string `json:"because,omitempty"`
 		When    string `json:"when"`
 		Retries int    `json:"retries,omitempty"`
-	}{s, eCode, status, o, b, t, s.retryCount}, "", "  ")
+	}{s, eCode, sCode, o, b, t, s.retryCount}, "", "  ")
 
 	if err != nil {
 		log.Printf("Error creating report status for service %q: %s", s.Name, err)
