@@ -2,7 +2,9 @@ Changelog
 =========
 
 ## 2.0.0
-- In progress
+- Alert before certificate expires ``ssl``
+- When debugging cookies are properly parsed
+- Cleaned up the tests
 
 ## 1.5.2
 - fallback to ``sh`` if no ``$SHELL`` found.
