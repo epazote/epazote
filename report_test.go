@@ -10,157 +10,87 @@ import (
 	"testing"
 )
 
-func TestReportHTTPGet(t *testing.T) {
+func TestReportNotifyHTTPDefault(t *testing.T) {
 	var wg sync.WaitGroup
-	custom_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
-		if r.Method != "GET" {
-			t.Errorf("Expecting Method GET got: %s", r.Method)
-		}
-		if r.FormValue("param") != "list" {
-			t.Errorf("Expecting param = list got: %s", r.FormValue("param"))
-		}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expect(t, "epazote", r.Header.Get("User-agent"))
+		expect(t, "GET", r.Method)
+		expect(t, "list", r.FormValue("param"))
 		wg.Done()
 	}))
-	defer custom_s.Close()
-
-	s := &Service{
-		Name: "s 1",
-		URL:  "http://about.epazote.io",
-		Expect: Expect{
-			Status: 200,
-		},
-	}
+	defer server.Close()
 	a := &Action{
 		HTTP: []HTTP{
 			HTTP{
-				URL: fmt.Sprintf("%s/?param=list", custom_s.URL),
+				URL: fmt.Sprintf("%s/?param=list", server.URL),
 			},
 		},
 	}
 	ez := &Epazote{}
 	wg.Add(1)
-	ez.Report(nil, s, a, nil, 1, 200, "because", "output")
+	ez.Report(nil, &Service{}, a, nil, 1, 200, "because", "output")
 	wg.Wait()
 }
 
-func TestReportHTTP0(t *testing.T) {
-	s := &Service{
-		Name: "s 1",
-		URL:  "http://about.epazote.io",
-		Expect: Expect{
-			Status: 200,
-		},
-	}
-	a := &Action{
-		HTTP: []HTTP{
-			HTTP{
-				URL: "http://no-call",
-			},
-		},
-	}
-	ez := &Epazote{}
-	ez.debug = true
-	ez.Report(nil, s, a, nil, 0, 200, "because", "output")
-}
-
-func TestReportHTTP001(t *testing.T) {
+func TestReportNotifyHTTPExitCode0(t *testing.T) {
 	var wg sync.WaitGroup
-	custom_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
-		if r.Method != "GET" {
-			t.Errorf("Expecting Method GET got: %s", r.Method)
-		}
-		if r.FormValue("exit") != "0" {
-			t.Errorf("Expecting exit = 0 got: %s", r.FormValue("exit"))
-		}
-		if r.FormValue("status") != "200" {
-			t.Errorf("Expecting status = 200 got: %s", r.FormValue("status"))
-		}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expect(t, "epazote", r.Header.Get("User-agent"))
+		expect(t, "GET", r.Method)
+		expect(t, "0", r.FormValue("exit"))
+		expect(t, "200", r.FormValue("status"))
 		wg.Done()
 	}))
-	defer custom_s.Close()
-
-	s := &Service{
-		Name: "s 1",
-		URL:  "http://about.epazote.io",
-		Expect: Expect{
-			Status: 200,
-		},
-	}
+	defer server.Close()
 	a := &Action{
 		HTTP: []HTTP{
 			HTTP{
-				URL: fmt.Sprintf("%s/?exit=_exit_&status=_status_", custom_s.URL),
+				URL: fmt.Sprintf("%s/?exit=_exit_&status=_status_", server.URL),
 			},
 			HTTP{
-				URL: fmt.Sprintf("%s/?exit=_exit_", custom_s.URL),
+				URL: fmt.Sprintf("%s/?exit=_exit_", server.URL),
 			},
 		},
 	}
 	ez := &Epazote{}
 	ez.debug = true
 	wg.Add(1)
-	ez.Report(nil, s, a, nil, 0, 200, "because", "output")
+	ez.Report(nil, &Service{}, a, nil, 0, 200, "because", "output")
 	wg.Wait()
 }
 
-func TestReportHTTP011(t *testing.T) {
+func TestReportNotifyHTTPExitCode1(t *testing.T) {
 	var wg sync.WaitGroup
-	custom_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
-		if r.Method != "GET" {
-			t.Errorf("Expecting Method GET got: %s", r.Method)
-		}
-		if r.FormValue("exit") != "1" {
-			t.Errorf("Expecting exit = 1 got: %s", r.FormValue("exit"))
-		}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expect(t, "epazote", r.Header.Get("User-agent"))
+		expect(t, "GET", r.Method)
+		expect(t, "1", r.FormValue("exit"))
 		wg.Done()
 	}))
-	defer custom_s.Close()
-
-	s := &Service{
-		Name: "s 1",
-		URL:  "http://about.epazote.io",
-		Expect: Expect{
-			Status: 200,
-		},
-	}
+	defer server.Close()
 	a := &Action{
 		HTTP: []HTTP{
 			HTTP{
-				URL: fmt.Sprintf("%s/?exit=0", custom_s.URL),
+				URL: fmt.Sprintf("%s/?exit=0", server.URL),
 			},
 			HTTP{
-				URL: fmt.Sprintf("%s/?exit=1", custom_s.URL),
+				URL: fmt.Sprintf("%s/?exit=1", server.URL),
 			},
 		},
 	}
 	ez := &Epazote{}
 	ez.debug = true
 	wg.Add(1)
-	ez.Report(nil, s, a, nil, 1, 200, "because", "output")
+	ez.Report(nil, &Service{}, a, nil, 1, 200, "because", "output")
 	wg.Wait()
 }
 
-func TestReportHTTPPost(t *testing.T) {
+func TestReportNotifyHTTPPost(t *testing.T) {
 	var wg sync.WaitGroup
-	custom_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
-		if r.Header.Get("Content-Type") != "application/x-www-form-urlencoded" {
-			t.Error("Expecting Content-Type: application/x-www-form-urlencoded")
-		}
-		if r.Method != "POST" {
-			t.Errorf("Expecting Method POST got: %s", r.Method)
-		}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expect(t, "epazote", r.Header.Get("User-agent"))
+		expect(t, "POST", r.Method)
+		expect(t, "application/x-www-form-urlencoded", r.Header.Get("Content-Type"))
 
 		body, _ := ioutil.ReadAll(r.Body)
 		values, _ := url.ParseQuery(string(body))
@@ -182,19 +112,11 @@ func TestReportHTTPPost(t *testing.T) {
 		}
 		wg.Done()
 	}))
-	defer custom_s.Close()
-
-	s := &Service{
-		Name: "s 1",
-		URL:  "http://about.epazote.io",
-		Expect: Expect{
-			Status: 200,
-		},
-	}
+	defer server.Close()
 	a := &Action{
 		HTTP: []HTTP{
 			HTTP{
-				URL:    custom_s.URL,
+				URL:    server.URL,
 				Method: "post",
 				Data:   "room_id=10&from=Alerts&message=A+new+user+signed+up&status=_status_",
 				Header: map[string]string{
@@ -206,25 +128,6 @@ func TestReportHTTPPost(t *testing.T) {
 	ez := &Epazote{}
 	ez.debug = true
 	wg.Add(1)
-	ez.Report(nil, s, a, nil, 1, 200, "because", "output")
+	ez.Report(nil, &Service{}, a, nil, 1, 200, "because", "output")
 	wg.Wait()
-}
-
-func TestReportHTTPNoURL(t *testing.T) {
-	s := &Service{
-		Name: "s 1",
-		URL:  "http://about.epazote.io",
-		Expect: Expect{
-			Status: 200,
-		},
-	}
-	a := &Action{
-		HTTP: []HTTP{
-			HTTP{
-				Method: "PUT",
-			},
-		},
-	}
-	ez := &Epazote{}
-	ez.Report(nil, s, a, nil, 1, 200, "because", "output")
 }
