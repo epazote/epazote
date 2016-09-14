@@ -7,7 +7,7 @@ import (
 // Func represents functions that can be retried.
 type Func func(attempt int) (retry bool, err error)
 
-// Do keeps trying the function until the second argument
+// Try Do keeps trying the function until the second argument
 // returns false, or no error is returned.
 func Try(fn Func) error {
 	var err error

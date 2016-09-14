@@ -7,17 +7,17 @@ import (
 	"strings"
 )
 
-type IScheduler interface {
+type Scheduler interface {
 	AddScheduler(string, int, func())
 }
 
 // Start Add services to scheduler
-func (self *Epazote) Start(isk IScheduler, debug bool) {
+func (e *Epazote) Start(sk Scheduler, debug bool) {
 	if debug {
-		self.debug = true
+		e.debug = true
 	}
 
-	for k, v := range self.Services {
+	for k, v := range e.Services {
 		// Set service name
 		v.Name = k
 
@@ -44,7 +44,7 @@ func (self *Epazote) Start(isk IScheduler, debug bool) {
 			v.Test.Test = strings.TrimSpace(v.Test.Test)
 		}
 
-		if self.debug {
+		if e.debug {
 			if v.URL != "" {
 				log.Printf(Green("Adding service: %s URL: %s"), v.Name, v.URL)
 			} else {
@@ -53,16 +53,16 @@ func (self *Epazote) Start(isk IScheduler, debug bool) {
 		}
 
 		// schedule the service
-		isk.AddScheduler(k, GetInterval(60, v.Every), self.Supervice(v))
+		sk.AddScheduler(k, GetInterval(60, v.Every), e.Supervice(v))
 	}
 
-	if len(self.Config.Scan.Paths) > 0 {
-		for _, v := range self.Config.Scan.Paths {
-			isk.AddScheduler(v, GetInterval(300, self.Config.Scan.Every), self.Scan(v))
+	if len(e.Config.Scan.Paths) > 0 {
+		for _, v := range e.Config.Scan.Paths {
+			sk.AddScheduler(v, GetInterval(300, e.Config.Scan.Every), e.Scan(v))
 			// schedule the scan but also scan at the beginning
-			go self.search(v)
+			e.search(v)
 		}
 	}
 
-	log.Printf("Epazote %c   on %d services, scan paths: %s [pid: %d]", Icon(herb), len(self.Services), strings.Join(self.Config.Scan.Paths, ","), os.Getpid())
+	log.Printf("Epazote %c   on %d services, scan paths: %s [pid: %d]", Icon(herb), len(e.Services), strings.Join(e.Config.Scan.Paths, ","), os.Getpid())
 }

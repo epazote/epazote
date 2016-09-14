@@ -1,7 +1,6 @@
 package epazote
 
 import (
-	//	"fmt"
 	"testing"
 )
 
@@ -9,11 +8,11 @@ type fakeScheduler struct {
 	services map[string]int
 }
 
-func (self *fakeScheduler) AddScheduler(name string, interval int, f func()) {
-	self.services[name] = interval
+func (sk *fakeScheduler) AddScheduler(name string, interval int, f func()) {
+	sk.services[name] = interval
 }
 
-func (self fakeScheduler) StopAll() {}
+func (sk fakeScheduler) StopAll() {}
 
 func TestStart(t *testing.T) {
 	cfg, err := New("test/epazote-start.yml")

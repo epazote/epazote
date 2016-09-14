@@ -12,13 +12,10 @@ import (
 
 func TestHTTPGet(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
+		expect(t, "epazote", r.Header.Get("User-agent"))
 		fmt.Fprintln(w, "Hello, epazote")
 	}))
 	defer ts.Close()
-
 	res, err := HTTPGet(ts.URL, false, true, nil, 3)
 	if err != nil {
 		t.Error(err)
@@ -28,37 +25,25 @@ func TestHTTPGet(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
+	expect(t, "Hello, epazote\n", string(body))
+	expect(t, 200, res.StatusCode)
 
-	if string(body) != "Hello, epazote\n" {
-		t.Error("Expecting Hello, epazote")
-	}
-
-	if res.StatusCode != 200 {
-		t.Error("Expecting StatusCode 200")
-	}
 }
 
 func TestHTTPPost(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
-		if r.Header.Get("Content-Type") != "application/json" {
-			t.Error("Expecting Content-Type: application/json")
-		}
+		expect(t, "epazote", r.Header.Get("User-agent"))
+		expect(t, "application/json", r.Header.Get("Content-Type"))
 		decoder := json.NewDecoder(r.Body)
 		var d struct{ Exit int }
 		err := decoder.Decode(&d)
 		if err != nil {
 			t.Error(err)
 		}
-		if d.Exit != 0 {
-			t.Error("Expexting 0")
-		}
+		expect(t, 0, d.Exit)
 		fmt.Fprintln(w, "Hello, epazote")
 	}))
 	defer ts.Close()
-
 	_, err := HTTPPost(ts.URL, []byte(`{"exit":0}`), nil)
 	if err != nil {
 		t.Error(err)
@@ -74,9 +59,7 @@ func TestHTTPPostBadURL(t *testing.T) {
 
 func TestAsyngGet(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
+		expect(t, "epazote", r.Header.Get("User-agent"))
 		fmt.Fprintln(w, "Hello, epazote")
 	}))
 	defer ts.Close()
@@ -237,15 +220,9 @@ func TestHTTPGetInsecureVerify(t *testing.T) {
 
 func TestHTTPGetCustomHeaders(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "my-UA" {
-			t.Error("Expecting User-agent: my-UA")
-		}
-		if r.Header.Get("Accept-Encoding") != "gzip" {
-			t.Error("Expecting Accept-Encoding: gzip")
-		}
-		if r.Header.Get("Origin") != "http://localhost" {
-			t.Error("Expecting Origin: http://localhost")
-		}
+		expect(t, "my-UA", r.Header.Get("User-agent"))
+		expect(t, "gzip", r.Header.Get("Accept-Encoding"))
+		expect(t, "http://localhost", r.Header.Get("Origin"))
 		fmt.Fprintln(w, "Hello, epazote")
 	}))
 	defer ts.Close()

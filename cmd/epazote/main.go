@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	ez "github.com/epazote/epazote"
+	e "github.com/epazote/epazote"
 )
 
 var version, githash string
@@ -31,7 +31,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	cfg, err := ez.New(*f)
+	cfg, err := e.New(*f)
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -68,7 +68,7 @@ func main() {
 	}
 
 	// create a Scheduler
-	sk := ez.GetScheduler()
+	sk := e.GetScheduler()
 
 	cfg.Start(sk, *d)
 

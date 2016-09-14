@@ -2,7 +2,7 @@ Changelog
 =========
 
 ## 2.0.0
-- Alert before certificate expires ``ssl``
+- SSL Alert before certificate expires ``ssl``
 - When debugging cookies are properly parsed
 - Cleaned up the tests
 
