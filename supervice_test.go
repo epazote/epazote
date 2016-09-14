@@ -3,34 +3,53 @@ package epazote
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"regexp"
 	"sync"
 	"testing"
 )
 
-func TestSuperviceTEST(t *testing.T) {
+type Wanted struct {
+	Name    string
+	Exit    int
+	Status  int
+	Output  string
+	Because string
+	Retries int
+	Test    string
+}
+
+func TestSupervice(t *testing.T) {
 	var wg sync.WaitGroup
-	type Wanted struct {
-		Name    string
-		Exit    int
-		Status  int
-		Output  string
-		Because string
-		Retries int
-		Test    string
-	}
 	wa := Wanted{}
 	type Return struct {
 		StatusCode int
 		Body       string
+		Header     map[string]string
+		redirect   bool
 	}
 	rs := &Return{}
+	checkEnd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, rs.Body)
+	}))
+	defer checkEnd.Close()
 	checkServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		expect(t, "epazote", r.Header.Get("User-agent"))
-		w.WriteHeader(rs.StatusCode)
-		fmt.Fprintln(w, rs.Body)
+		if rs.redirect {
+			http.Redirect(w, r, checkEnd.URL, http.StatusFound)
+		} else {
+			if rs.Header != nil {
+				for k, v := range rs.Header {
+					w.Header().Set(k, v)
+				}
+			}
+			w.WriteHeader(rs.StatusCode)
+			fmt.Fprintln(w, rs.Body)
+		}
 	}))
 	defer checkServer.Close()
 	logServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -83,7 +102,7 @@ func TestSuperviceTEST(t *testing.T) {
 				Status: 201,
 			},
 		}},
-			&Return{http.StatusCreated, "body"},
+			&Return{http.StatusCreated, "body", nil, false},
 			Wanted{"s 3", 0, 201, "", "Status: 201", 0, ""},
 		},
 		{map[string]*Service{"s 1": &Service{
@@ -95,7 +114,7 @@ func TestSuperviceTEST(t *testing.T) {
 				body: regexp.MustCompile(`(?i)[a-z0-9]{8}-[a-z0-9]{4}-[1-5][a-z0-9]{3}-[a-z0-9]{4}-[a-z0-9]{12}`),
 			},
 		}},
-			&Return{http.StatusOK, "Hello, epazote match 0BC20225-2E72-4646-9202-8467972199E1 regex"},
+			&Return{http.StatusOK, "Hello, epazote match 0BC20225-2E72-4646-9202-8467972199E1 regex", nil, false},
 			Wanted{"s 4 regex match", 0, 200, "", "Body regex match: 0BC20225-2E72-4646-9202-8467972199E1", 0, ""},
 		},
 		{map[string]*Service{"s 1": &Service{
@@ -107,7 +126,7 @@ func TestSuperviceTEST(t *testing.T) {
 				body: regexp.MustCompile(`[a-z0-9]{8}-[a-z0-9]{4}-[1-5][a-z0-9]{3}-[a-z0-9]{4}-[a-z0-9]{12}`),
 			},
 		}},
-			&Return{http.StatusOK, "Hello, epazote match 0BC20225-2E72-4646-9202-8467972199E1 regex"},
+			&Return{http.StatusOK, "Hello, epazote match 0BC20225-2E72-4646-9202-8467972199E1 regex", nil, false},
 			Wanted{"s 5 regex no match", 1, 200, "No defined cmd", "Body no regex match: [a-z0-9]{8}-[a-z0-9]{4}-[1-5][a-z0-9]{3}-[a-z0-9]{4}-[a-z0-9]{12}", 0, ""},
 		},
 		{map[string]*Service{"s 1": &Service{
@@ -155,7 +174,7 @@ func TestSuperviceTEST(t *testing.T) {
 				"x-amqp-kapputt": Action{Notify: "yes"},
 			},
 		}},
-			&Return{http.StatusBadGateway, ""},
+			&Return{http.StatusBadGateway, "", nil, false},
 			Wanted{"s 8 match 502", 1, 502, "No defined cmd", "Status: 502", 0, ""},
 		},
 		{map[string]*Service{"s 1": &Service{
@@ -176,8 +195,161 @@ func TestSuperviceTEST(t *testing.T) {
 				"x-db-kapputt":   Action{},
 			},
 		}},
-			&Return{http.StatusHTTPVersionNotSupported, ""},
+			&Return{http.StatusHTTPVersionNotSupported, "", nil, false},
 			Wanted{"s 9 ifstatus no match", 1, 505, "No defined cmd", "Status: 505", 0, ""},
+		},
+		{map[string]*Service{"s 1": &Service{
+			Name: "s 10 ifHeader match",
+			URL:  checkServer.URL,
+			Log:  logServer.URL,
+			Expect: Expect{
+				Status: 200,
+				IfNot:  Action{},
+			},
+			IfStatus: map[int]Action{
+				501: Action{},
+				503: Action{},
+			},
+			IfHeader: map[string]Action{
+				"x-amqp-kapputt": Action{Notify: "yes"},
+				"x-db-kapputt":   Action{Cmd: "test 1 -gt 2"},
+			},
+		}},
+			&Return{http.StatusOK, "", map[string]string{"x-db-kapputt": "si si si"}, false},
+			Wanted{"s 10 ifHeader match", 1, 200, "exit status 1", "Header: x-db-kapputt", 0, ""},
+		},
+		{map[string]*Service{"s 1": &Service{
+			Name: "s 11 status 202",
+			URL:  checkServer.URL,
+			Log:  logServer.URL,
+			Expect: Expect{
+				Status: 202,
+				IfNot:  Action{},
+			},
+			IfStatus: map[int]Action{
+				501: Action{},
+				503: Action{},
+			},
+			IfHeader: map[string]Action{
+				"x-amqp-kapputt": Action{Notify: "yes"},
+				"x-db-kapputt":   Action{Cmd: "test 1 -gt 2"},
+			},
+		}},
+			&Return{http.StatusAccepted, "", nil, false},
+			Wanted{"s 11 status 202", 0, 202, "", "Status: 202", 0, ""},
+		},
+		{map[string]*Service{"s 1": &Service{
+			Name: "s 12 missing header",
+			URL:  checkServer.URL,
+			Log:  logServer.URL,
+			Expect: Expect{
+				Status: 200,
+				Header: map[string]string{
+					"test":  "xxx",
+					"X-Abc": "xyz",
+				},
+				IfNot: Action{},
+			},
+			IfStatus: map[int]Action{
+				501: Action{},
+				503: Action{},
+			},
+			IfHeader: map[string]Action{
+				"x-amqp-kapputt": Action{Notify: "yes"},
+				"x-db-kapputt":   Action{Cmd: "test 1 -gt 2"},
+			},
+		}},
+			&Return{http.StatusOK, "", map[string]string{"X-Abc": "xyz"}, false},
+			Wanted{"s 12 missing header", 1, 200, "No defined cmd", "Header: test: xxx", 0, ""},
+		},
+		{map[string]*Service{"s 1": &Service{
+			Name: "s 13 matching header",
+			URL:  checkServer.URL,
+			Log:  logServer.URL,
+			Expect: Expect{
+				Status: 200,
+				Header: map[string]string{
+					"X-Abc": "xyz",
+				},
+				IfNot: Action{},
+			},
+			IfStatus: map[int]Action{
+				501: Action{},
+				503: Action{},
+			},
+			IfHeader: map[string]Action{
+				"x-amqp-kapputt": Action{Notify: "yes"},
+				"x-db-kapputt":   Action{Cmd: "test 1 -gt 2"},
+			},
+		}},
+			&Return{http.StatusOK, "", map[string]string{"X-Abc": "xyz"}, false},
+			Wanted{"s 13 matching header", 0, 200, "", "Status: 200", 0, ""},
+		},
+		{map[string]*Service{"s 1": &Service{
+			Name: "s 14 matching header prefix",
+			URL:  checkServer.URL,
+			Log:  logServer.URL,
+			Expect: Expect{
+				Status: 200,
+				Header: map[string]string{
+					"content-type": "application/json",
+				},
+				IfNot: Action{},
+			},
+		}},
+			&Return{http.StatusOK, "", map[string]string{"content-type": "application/json; charset=UTF-8"}, false},
+			Wanted{"s 14 matching header prefix", 0, 200, "", "Status: 200", 0, ""},
+		},
+		{map[string]*Service{"s 1": &Service{
+			Name: "s 15 302",
+			URL:  checkServer.URL,
+			Log:  logServer.URL,
+			Expect: Expect{
+				Status: 302,
+				IfNot:  Action{},
+			},
+			IfStatus: map[int]Action{
+				200: Action{},
+			},
+		}},
+			&Return{http.StatusFound, "", map[string]string{"content-type": "application/json; charset=UTF-8"}, false},
+			Wanted{"s 15 302", 0, 302, "", "Status: 302", 0, ""},
+		},
+		{map[string]*Service{"s 1": &Service{
+			Name:   "s 16 follow",
+			URL:    checkServer.URL,
+			Follow: true,
+			Log:    logServer.URL,
+			Expect: Expect{
+				Status: 200,
+				Body:   "(?i)[a-z0-9]{8}-[a-z0-9]{4}-[1-5][a-z0-9]{3}-[a-z0-9]{4}-[a-z0-9]{12}",
+				body:   regexp.MustCompile(`(?i)[a-z0-9]{8}-[a-z0-9]{4}-[1-5][a-z0-9]{3}-[a-z0-9]{4}-[a-z0-9]{12}`),
+			},
+			IfStatus: map[int]Action{
+				302: Action{},
+			},
+		}},
+			&Return{0, "Hello, epazote match 0BC20225-2E72-4646-9202-8467972199E1 regex", nil, true},
+			Wanted{"s 16 follow", 0, 200, "", "Body regex match: 0BC20225-2E72-4646-9202-8467972199E1", 0, ""},
+		},
+		{map[string]*Service{"s 1": &Service{
+			Name: "s 17 redirect",
+			URL:  checkServer.URL,
+			Log:  logServer.URL,
+		}},
+			&Return{0, "", nil, true},
+			Wanted{"s 17 redirect", 1, 302, "No defined cmd", "Status: 302", 0, ""},
+		},
+		{map[string]*Service{"s 1": &Service{
+			Name:      "s 18 readlimit",
+			URL:       checkServer.URL,
+			Log:       logServer.URL,
+			ReadLimit: 5,
+			Follow:    true,
+			Expect:    Expect{Status: 200},
+		}},
+			&Return{0, "0123", nil, true},
+			Wanted{"s 18 readlimit", 0, 200, "", "Status: 200", 0, ""},
 		},
 	}
 	for _, tt := range testTable {
@@ -192,845 +364,29 @@ func TestSuperviceTEST(t *testing.T) {
 	}
 }
 
-func TestSuperviceIfHeaderMatch(t *testing.T) {
-	var wg sync.WaitGroup
-	check_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
-		w.Header().Set("x-db-kapputt", "si si si")
-		fmt.Fprintln(w, "Hello")
-	}))
-	defer check_s.Close()
-	log_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
-		decoder := json.NewDecoder(r.Body)
-		var i map[string]interface{}
-		err := decoder.Decode(&i)
-		if err != nil {
-			t.Error(err)
-		}
-		// check name
-		if n, ok := i["name"]; ok {
-			if n != "s 1" {
-				t.Errorf("Expecting  %q, got: %q", "s 1", n)
-			}
-		} else {
-			t.Errorf("key not found: %q", "name")
-		}
-		// check because
-		if b, ok := i["because"]; ok {
-			if b != "Header: X-Db-Kapputt" {
-				t.Errorf("Expecting: %q, got: %q", "Header: x-db-kapputt", b)
-			}
-		} else {
-			t.Errorf("key not found: %q", "because")
-		}
-		// check exit
-		if e, ok := i["exit"]; ok {
-			if e.(float64) != 1 {
-				t.Errorf("Expecting: 0 got: %v", e.(float64))
-			}
-		} else {
-			t.Errorf("key not found: %q", "exit")
-		}
-		// check url
-		if _, ok := i["url"]; !ok {
-			t.Error("URL key not found")
-		}
-		// check output
-		e := "exit status 1"
-		if i["output"] != e {
-			t.Errorf("Expecting %q, got %q", e, i["output"])
-		}
-		if i["status"].(float64) != 200 {
-			t.Errorf("Expecting status: %d got: %v", 200, i["status"])
-		}
-		wg.Done()
-	}))
-	defer log_s.Close()
-	s := make(Services)
-	s["s 1"] = &Service{
-		Name: "s 1",
-		URL:  check_s.URL,
-		Log:  log_s.URL,
-		Expect: Expect{
-			Status: 200,
-			IfNot:  Action{},
-		},
-		IfStatus: map[int]Action{
-			501: Action{},
-			503: Action{},
-		},
-		IfHeader: map[string]Action{
-			"x-amqp-kapputt": Action{Notify: "yes"},
-			"X-Db-Kapputt": Action{
-				Cmd: "test 1 -gt 2",
-			},
-		},
-	}
-	ez := &Epazote{
-		Services: s,
-	}
-	wg.Add(1)
-	ez.Supervice(s["s 1"])()
-	wg.Wait()
-}
-
-func TestSuperviceStatus202(t *testing.T) {
-	var wg sync.WaitGroup
-	check_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
-		w.WriteHeader(http.StatusAccepted)
-	}))
-	defer check_s.Close()
-	log_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
-		decoder := json.NewDecoder(r.Body)
-		var i map[string]interface{}
-		err := decoder.Decode(&i)
-		if err != nil {
-			t.Error(err)
-		}
-		// check name
-		if n, ok := i["name"]; ok {
-			if n != "s 1" {
-				t.Errorf("Expecting  %q, got: %q", "s 1", n)
-			}
-		} else {
-			t.Errorf("key not found: %q", "name")
-		}
-		// check because
-		if b, ok := i["because"]; ok {
-			if b != "Status: 202" {
-				t.Errorf("Expecting: %q, got: %q", "Status: 202", b)
-			}
-		} else {
-			t.Errorf("key not found: %q", "because")
-		}
-		// check exit
-		if e, ok := i["exit"]; ok {
-			if e.(float64) != 0 {
-				t.Errorf("Expecting: 0 got: %v", e.(float64))
-			}
-		} else {
-			t.Errorf("key not found: %q", "exit")
-		}
-		// check url
-		if _, ok := i["url"]; !ok {
-			t.Error("URL key not found")
-		}
-		// check output
-		if o, ok := i["output"]; ok {
-			t.Errorf("key should not exist,content: %q", o)
-		}
-		if i["status"].(float64) != 202 {
-			t.Errorf("Expecting status: %d got: %v", 202, i["status"])
-		}
-		wg.Done()
-	}))
-	defer log_s.Close()
-	s := make(Services)
-	s["s 1"] = &Service{
-		Name: "s 1",
-		URL:  check_s.URL,
-		Log:  log_s.URL,
-		Expect: Expect{
-			Status: 202,
-			IfNot:  Action{},
-		},
-		IfStatus: map[int]Action{
-			501: Action{},
-			503: Action{},
-		},
-		IfHeader: map[string]Action{
-			"x-amqp-kapputt": Action{Notify: "yes"},
-			"X-Db-Kapputt": Action{
-				Cmd: "test 1 -gt 2",
-			},
-		},
-	}
-	ez := &Epazote{
-		Services: s,
-	}
-	wg.Add(1)
-	ez.Supervice(s["s 1"])()
-	wg.Wait()
-}
-
-func TestSuperviceMissingHeader(t *testing.T) {
-	var wg sync.WaitGroup
-	check_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
-		w.Header().Set("X-Abc", "xyz")
-	}))
-	defer check_s.Close()
-	log_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
-		decoder := json.NewDecoder(r.Body)
-		var i map[string]interface{}
-		err := decoder.Decode(&i)
-		if err != nil {
-			t.Error(err)
-		}
-		// check name
-		if n, ok := i["name"]; ok {
-			if n != "s 1" {
-				t.Errorf("Expecting  %q, got: %q", "s 1", n)
-			}
-		} else {
-			t.Errorf("key not found: %q", "name")
-		}
-		// check because
-		if b, ok := i["because"]; ok {
-			if b != "Header: test: xxx" {
-				t.Errorf("Expecting: %q, got: %q", "Header: test: xxx", b)
-			}
-		} else {
-			t.Errorf("key not found: %q", "because")
-		}
-		// check exit
-		if e, ok := i["exit"]; ok {
-			if e.(float64) != 1 {
-				t.Errorf("Expecting: 1 got: %v", e.(float64))
-			}
-		} else {
-			t.Errorf("key not found: %q", "exit")
-		}
-		// check url
-		if _, ok := i["url"]; !ok {
-			t.Error("URL key not found")
-		}
-		// check output
-		if o, ok := i["output"]; ok {
-			e := "No defined cmd"
-			if o != e {
-				t.Errorf("Expecting %q, got %q", e, o)
-			}
-		} else {
-			t.Errorf("key not found: %q", "output")
-		}
-		if i["status"].(float64) != 200 {
-			t.Errorf("Expecting status: %d got: %v", 200, i["status"])
-		}
-		wg.Done()
-	}))
-	defer log_s.Close()
-	s := make(Services)
-	s["s 1"] = &Service{
-		Name: "s 1",
-		URL:  check_s.URL,
-		Log:  log_s.URL,
-		Expect: Expect{
-			Status: 200,
-			Header: map[string]string{
-				"test":  "xxx",
-				"X-Abc": "xyz",
-			},
-			IfNot: Action{},
-		},
-		IfStatus: map[int]Action{
-			501: Action{},
-			503: Action{},
-		},
-		IfHeader: map[string]Action{
-			"x-amqp-kapputt": Action{Notify: "yes"},
-			"X-Db-Kapputt": Action{
-				Cmd: "test 1 -gt 2",
-			},
-		},
-	}
-	ez := &Epazote{
-		Services: s,
-	}
-	wg.Add(1)
-	ez.Supervice(s["s 1"])()
-	wg.Wait()
-}
-
-func TestSuperviceMatchingHeader(t *testing.T) {
-	var wg sync.WaitGroup
-	check_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
-		w.Header().Set("X-Abc", "xyz")
-	}))
-	defer check_s.Close()
-	log_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
-		decoder := json.NewDecoder(r.Body)
-		var i map[string]interface{}
-		err := decoder.Decode(&i)
-		if err != nil {
-			t.Error(err)
-		}
-		// check name
-		if n, ok := i["name"]; ok {
-			if n != "s 1" {
-				t.Errorf("Expecting  %q, got: %q", "s 1", n)
-			}
-		} else {
-			t.Errorf("key not found: %q", "name")
-		}
-		// check because
-		if b, ok := i["because"]; ok {
-			if b != "Status: 200" {
-				t.Errorf("Expecting: %q, got: %q", "Status: 200", b)
-			}
-		} else {
-			t.Errorf("key not found: %q", "because")
-		}
-		// check exit
-		if e, ok := i["exit"]; ok {
-			if e.(float64) != 0 {
-				t.Errorf("Expecting: 0 got: %v", e.(float64))
-			}
-		} else {
-			t.Errorf("key not found: %q", "exit")
-		}
-		// check url
-		if _, ok := i["url"]; !ok {
-			t.Error("URL key not found")
-		}
-		// check output
-		if o, ok := i["output"]; ok {
-			t.Errorf("key should not exist,content: %q", o)
-		}
-		if i["status"].(float64) != 200 {
-			t.Errorf("Expecting status: %d got: %v", 200, i["status"])
-		}
-		wg.Done()
-	}))
-	defer log_s.Close()
-	s := make(Services)
-	s["s 1"] = &Service{
-		Name: "s 1",
-		URL:  check_s.URL,
-		Log:  log_s.URL,
-		Expect: Expect{
-			Status: 200,
-			Header: map[string]string{
-				"X-Abc": "xyz",
-			},
-			IfNot: Action{},
-		},
-		IfStatus: map[int]Action{
-			501: Action{},
-			503: Action{},
-		},
-		IfHeader: map[string]Action{
-			"x-amqp-kapputt": Action{Notify: "yes"},
-			"X-Db-Kapputt": Action{
-				Cmd: "test 1 -gt 2",
-			},
-		},
-	}
-	ez := &Epazote{
-		Services: s,
-	}
-	wg.Add(1)
-	ez.Supervice(s["s 1"])()
-	wg.Wait()
-}
-
-func TestSuperviceMatchingHeaderPrefix(t *testing.T) {
-	var wg sync.WaitGroup
-	check_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
-		w.Header().Set("content-type", "application/json; charset=UTF-8")
-	}))
-	defer check_s.Close()
-	log_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
-		decoder := json.NewDecoder(r.Body)
-		var i map[string]interface{}
-		err := decoder.Decode(&i)
-		if err != nil {
-			t.Error(err)
-		}
-		// check name
-		if n, ok := i["name"]; ok {
-			if n != "s 1" {
-				t.Errorf("Expecting  %q, got: %q", "s 1", n)
-			}
-		} else {
-			t.Errorf("key not found: %q", "name")
-		}
-		// check because
-		if b, ok := i["because"]; ok {
-			if b != "Status: 200" {
-				t.Errorf("Expecting: %q, got: %q", "Status: 200", b)
-			}
-		} else {
-			t.Errorf("key not found: %q", "because")
-		}
-		// check exit
-		if e, ok := i["exit"]; ok {
-			if e.(float64) != 0 {
-				t.Errorf("Expecting: 0 got: %v", e.(float64))
-			}
-		} else {
-			t.Errorf("key not found: %q", "exit")
-		}
-		// check url
-		if _, ok := i["url"]; !ok {
-			t.Error("URL key not found")
-		}
-		// check output
-		if o, ok := i["output"]; ok {
-			t.Errorf("key should not exist,content: %q", o)
-		}
-		if i["status"].(float64) != 200 {
-			t.Errorf("Expecting status: %d got: %v", 200, i["status"])
-		}
-		wg.Done()
-	}))
-	defer log_s.Close()
-	s := make(Services)
-	s["s 1"] = &Service{
-		Name: "s 1",
-		URL:  check_s.URL,
-		Log:  log_s.URL,
-		Expect: Expect{
-			Status: 200,
-			Header: map[string]string{
-				"content-type": "application/json",
-			},
-			IfNot: Action{},
-		},
-		IfStatus: map[int]Action{
-			501: Action{},
-			503: Action{},
-		},
-		IfHeader: map[string]Action{
-			"x-amqp-kapputt": Action{Notify: "yes"},
-			"X-Db-Kapputt": Action{
-				Cmd: "test 1 -gt 2",
-			},
-		},
-	}
-	ez := &Epazote{
-		Services: s,
-	}
-	wg.Add(1)
-	ez.Supervice(s["s 1"])()
-	wg.Wait()
-}
-
-func TestSuperviceLogErr(t *testing.T) {
-	s := make(Services)
-	s["s 1"] = &Service{
-		Name: "s 1",
-		URL:  "--",
-		Log:  "http://",
-		Expect: Expect{
-			Status: 200,
-		},
-	}
-	ez := new(Epazote)
-	ser := *s["s 1"]
-	ez.Log(&ser, []byte{0})
-
-	//if buf.Len() == 0 {
-	//t.Error("Expecting log.Println error")
-	//}
-}
-
-func TestSuperviceMatchingHeaderDebugGreen(t *testing.T) {
-	var wg sync.WaitGroup
-	check_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
-		w.Header().Set("X-Abc", "xyz")
-	}))
-	defer check_s.Close()
-	log_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
-		decoder := json.NewDecoder(r.Body)
-		var i map[string]interface{}
-		err := decoder.Decode(&i)
-		if err != nil {
-			t.Error(err)
-		}
-		// check name
-		if n, ok := i["name"]; ok {
-			if n != "s 1" {
-				t.Errorf("Expecting  %q, got: %q", "s 1", n)
-			}
-		} else {
-			t.Errorf("key not found: %q", "name")
-		}
-		// check because
-		if b, ok := i["because"]; ok {
-			if b != "Status: 200" {
-				t.Errorf("Expecting: %q, got: %q", "Status: 200", b)
-			}
-		} else {
-			t.Errorf("key not found: %q", "because")
-		}
-		// check exit
-		if e, ok := i["exit"]; ok {
-			if e.(float64) != 0 {
-				t.Errorf("Expecting: 0 got: %v", e.(float64))
-			}
-		} else {
-			t.Errorf("key not found: %q", "exit")
-		}
-		// check url
-		if _, ok := i["url"]; !ok {
-			t.Error("URL key not found")
-		}
-		// check output
-		if o, ok := i["output"]; ok {
-			t.Errorf("key should not exist,content: %q", o)
-		}
-		if i["status"].(float64) != 200 {
-			t.Errorf("Expecting status: %d got: %v", 200, i["status"])
-		}
-		wg.Done()
-	}))
-	defer log_s.Close()
-	s := make(Services)
-	s["s 1"] = &Service{
-		Name: "s 1",
-		URL:  check_s.URL,
-		Log:  log_s.URL,
-		Expect: Expect{
-			Status: 200,
-			Header: map[string]string{
-				"X-Abc": "xyz",
-			},
-			IfNot: Action{},
-		},
-		IfStatus: map[int]Action{
-			501: Action{},
-			503: Action{},
-		},
-		IfHeader: map[string]Action{
-			"x-amqp-kapputt": Action{Notify: "yes"},
-			"X-Db-Kapputt": Action{
-				Cmd: "test 1 -gt 2",
-			},
-		},
-	}
-	ez := &Epazote{
-		Services: s,
-		debug:    true,
-	}
-	wg.Add(1)
-	ez.Supervice(s["s 1"])()
-	wg.Wait()
-
-	//if buf.Len() == 0 {
-	//t.Error("Expecting log.Println error")
-	//}
-}
-
-func TestSuperviceMatchingHeaderDebugRed(t *testing.T) {
-	var wg sync.WaitGroup
-	check_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
-		w.Header().Set("X-Abc", "xyz")
-	}))
-	defer check_s.Close()
-	log_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
-		decoder := json.NewDecoder(r.Body)
-		var i map[string]interface{}
-		err := decoder.Decode(&i)
-		if err != nil {
-			t.Error(err)
-		}
-		// check name
-		if n, ok := i["name"]; ok {
-			if n != "s 1" {
-				t.Errorf("Expecting  %q, got: %q", "s 1", n)
-			}
-		} else {
-			t.Errorf("key not found: %q", "name")
-		}
-		// check because
-		if b, ok := i["because"]; ok {
-			if b != "Status: 200" {
-				t.Errorf("Expecting: %q, got: %q", "Status: 200", b)
-			}
-		} else {
-			t.Errorf("key not found: %q", "because")
-		}
-		// check exit
-		if e, ok := i["exit"]; ok {
-			if e.(float64) != 1 {
-				t.Errorf("Expecting: 1 got: %v", e.(float64))
-			}
-		} else {
-			t.Errorf("key not found: %q", "exit")
-		}
-		// check url
-		if _, ok := i["url"]; !ok {
-			t.Error("URL key not found")
-		}
-		// check output
-		e := "No defined cmd"
-		if i["output"] != e {
-			t.Errorf("Expecting %q, got %q", e, i["output"])
-		}
-		if i["status"].(float64) != 200 {
-			t.Errorf("Expecting status: %d got: %v", 200, i["status"])
-		}
-		wg.Done()
-	}))
-	defer log_s.Close()
-	s := make(Services)
-	s["s 1"] = &Service{
-		Name: "s 1",
-		URL:  check_s.URL,
-		Log:  log_s.URL,
-		Expect: Expect{
-			Status: 300,
-			Header: map[string]string{
-				"X-Abc": "xyz",
-			},
-			IfNot: Action{},
-		},
-		IfStatus: map[int]Action{
-			501: Action{},
-			503: Action{},
-		},
-		IfHeader: map[string]Action{
-			"x-amqp-kapputt": Action{Notify: "yes"},
-			"X-Db-Kapputt": Action{
-				Cmd: "test 1 -gt 2",
-			},
-		},
-	}
-	ez := &Epazote{
-		Services: s,
-		debug:    true,
-	}
-	wg.Add(1)
-	ez.Supervice(s["s 1"])()
-	wg.Wait()
-
-	//if buf.Len() == 0 {
-	//t.Error("Expecting log.Println error")
-	//}
-}
-
-func TestSupervice302(t *testing.T) {
-	var wg sync.WaitGroup
-	check_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
-		w.WriteHeader(http.StatusFound)
-	}))
-	defer check_s.Close()
-	log_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
-		decoder := json.NewDecoder(r.Body)
-		var i map[string]interface{}
-		err := decoder.Decode(&i)
-		if err != nil {
-			t.Error(err)
-		}
-		// check name
-		if n, ok := i["name"]; ok {
-			if n != "s 1" {
-				t.Errorf("Expecting  %q, got: %q", "s 1", n)
-			}
-		} else {
-			t.Errorf("key not found: %q", "name")
-		}
-		// check because
-		if b, ok := i["because"]; ok {
-			if b != "Status: 302" {
-				t.Errorf("Expecting: %q, got: %q", "Status: 302", b)
-			}
-		} else {
-			t.Errorf("key not found: %q", "because")
-		}
-		// check exit
-		if e, ok := i["exit"]; ok {
-			if e.(float64) != 0 {
-				t.Errorf("Expecting: 1 got: %v", e.(float64))
-			}
-		} else {
-			t.Errorf("key not found: %q", "exit")
-		}
-		// check url
-		if _, ok := i["url"]; !ok {
-			t.Error("URL key not found")
-		}
-		// check output
-		if o, ok := i["output"]; ok {
-			t.Errorf("key should not exist,content: %q", o)
-		}
-		if i["status"].(float64) != 302 {
-			t.Errorf("Expecting status: %d got: %v", 302, i["status"])
-		}
-		wg.Done()
-	}))
-	defer log_s.Close()
-	s := make(Services)
-	s["s 1"] = &Service{
-		Name: "s 1",
-		URL:  check_s.URL,
-		Log:  log_s.URL,
-		Expect: Expect{
-			Status: 302,
-			IfNot:  Action{},
-		},
-		IfStatus: map[int]Action{
-			200: Action{},
-		},
-	}
-	ez := &Epazote{
-		Services: s,
-		debug:    true,
-	}
-	wg.Add(1)
-	ez.Supervice(s["s 1"])()
-	wg.Wait()
-
-	//if buf.Len() == 0 {
-	//t.Error("Expecting log.Println error")
-	//}
-}
-
-func TestSuperviceFollow(t *testing.T) {
-	var wg sync.WaitGroup
-	check_end := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "Hello, epazote match 0BC20225-2E72-4646-9202-8467972199E1 regex")
-	}))
-	defer check_end.Close()
-	check_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
-		http.Redirect(w, r, check_end.URL, http.StatusFound)
-	}))
-	defer check_s.Close()
-	log_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
-		decoder := json.NewDecoder(r.Body)
-		var i map[string]interface{}
-		err := decoder.Decode(&i)
-		if err != nil {
-			t.Error(err)
-		}
-		// check name
-		if n, ok := i["name"]; ok {
-			if n != "s 1" {
-				t.Errorf("Expecting  %q, got: %q", "s 1", n)
-			}
-		} else {
-			t.Errorf("key not found: %q", "name")
-		}
-		// check because
-		e := "Body regex match: 0BC20225-2E72-4646-9202-8467972199E1"
-		if i["because"] != e {
-			t.Errorf("Expecting: %q, got: %v", e, i["because"])
-		}
-		// check exit
-		if i["exit"].(float64) != 0 {
-			t.Errorf("Expecting: 0 got: %v", i["exit"])
-		}
-		// check url
-		if _, ok := i["url"]; !ok {
-			t.Error("URL key not found")
-		}
-		// check output
-		if o, ok := i["output"]; ok {
-			t.Errorf("key should not exist,content: %q", o)
-		}
-		if i["status"].(float64) != 200 {
-			t.Errorf("Expecting status: %d got: %v", 200, i["status"])
-		}
-		wg.Done()
-	}))
-	defer log_s.Close()
-	s := make(Services)
-	re := regexp.MustCompile(`(?i)[a-z0-9]{8}-[a-z0-9]{4}-[1-5][a-z0-9]{3}-[a-z0-9]{4}-[a-z0-9]{12}`)
-	s["s 1"] = &Service{
-		Name:   "s 1",
-		URL:    check_s.URL,
-		Follow: true,
-		Log:    log_s.URL,
-		Expect: Expect{
-			Status: 200,
-			Body:   "(?i)[a-z0-9]{8}-[a-z0-9]{4}-[1-5][a-z0-9]{3}-[a-z0-9]{4}-[a-z0-9]{12}",
-			body:   re,
-		},
-		IfStatus: map[int]Action{
-			302: Action{},
-		},
-	}
-	ez := &Epazote{
-		Services: s,
-		debug:    true,
-	}
-	wg.Add(1)
-	ez.Supervice(s["s 1"])()
-	wg.Wait()
-
-	//if buf.Len() == 0 {
-	//t.Error("Expecting log.Println error")
-	//}
-}
-
 func TestSuperviceSkipCmd(t *testing.T) {
 	var wg sync.WaitGroup
-	check_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	checkServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "Hello, epazote match 0BC20225-2E72-4646-9202-8467972199E1 regex")
 	}))
-	defer check_s.Close()
-	log_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
+	defer checkServer.Close()
+	logServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expect(t, "epazote", r.Header.Get("User-agent"))
 		decoder := json.NewDecoder(r.Body)
-		var i map[string]interface{}
+		var i Wanted
 		err := decoder.Decode(&i)
 		if err != nil {
 			t.Error(err)
 		}
 		wg.Done()
 	}))
-	defer log_s.Close()
+	defer logServer.Close()
 	s := make(Services)
 	s["s 1"] = &Service{
 		Name:   "s 1",
-		URL:    check_s.URL,
 		Follow: true,
-		Log:    log_s.URL,
+		Log:    logServer.URL,
+		URL:    checkServer.URL,
 		Expect: Expect{
 			Status: 201,
 			IfNot: Action{
@@ -1046,51 +402,38 @@ func TestSuperviceSkipCmd(t *testing.T) {
 	ez.Supervice(s["s 1"])()
 	ez.Supervice(s["s 1"])()
 	wg.Wait()
-
-	//if buf.Len() == 0 {
-	//t.Error("Expecting log.Println error")
-	//}
-
-	if s["s 1"].status != 2 {
-		t.Errorf("Expecting status == 2 got: %v", s["s 1"].status)
-	}
-
+	expect(t, 2, s["s 1"].status)
 	s["s 1"].status = 0
 	s["s 1"].Expect.Status = 200
 	wg.Add(1)
 	ez.Supervice(s["s 1"])()
 	wg.Wait()
-
-	if s["s 1"].status != 0 {
-		t.Errorf("Expecting status == 0 got: %v", s["s 1"].status)
-	}
+	expect(t, 0, s["s 1"].status)
 }
 
 func TestSuperviceCount1000(t *testing.T) {
 	var wg sync.WaitGroup
-	check_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "Hello, epazote")
+	checkServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "Hello, epazote match 0BC20225-2E72-4646-9202-8467972199E1 regex")
 	}))
-	defer check_s.Close()
-	log_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
+	defer checkServer.Close()
+	logServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expect(t, "epazote", r.Header.Get("User-agent"))
 		decoder := json.NewDecoder(r.Body)
-		var i map[string]interface{}
+		var i Wanted
 		err := decoder.Decode(&i)
 		if err != nil {
 			t.Error(err)
 		}
 		wg.Done()
 	}))
-	defer log_s.Close()
+	defer logServer.Close()
 	s := make(Services)
 	s["s 1"] = &Service{
 		Name:   "s 1",
-		URL:    check_s.URL,
+		URL:    checkServer.URL,
 		Follow: true,
-		Log:    log_s.URL,
+		Log:    logServer.URL,
 		Expect: Expect{
 			Status: 201,
 			IfNot: Action{
@@ -1107,12 +450,9 @@ func TestSuperviceCount1000(t *testing.T) {
 		ez.Supervice(s["s 1"])()
 	}
 	wg.Wait()
-	if s["s 1"].status != 1000 {
-		t.Errorf("Expecting status: 1000 got: %v", s["s 1"].status)
-	}
+	expect(t, 1000, s["s 1"].status)
 }
 
-// server.CloseClientConnections not workng on golang 1.6
 func TestSuperviceRetrie(t *testing.T) {
 	var wg sync.WaitGroup
 	var server *httptest.Server
@@ -1128,40 +468,21 @@ func TestSuperviceRetrie(t *testing.T) {
 	server = httptest.NewServer(h)
 	defer server.Close()
 
-	log_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
+	logServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expect(t, "epazote", r.Header.Get("User-agent"))
 		decoder := json.NewDecoder(r.Body)
-		var i map[string]interface{}
+		var i Wanted
 		err := decoder.Decode(&i)
 		if err != nil {
 			t.Error(err)
 		}
-		// check exit
-		if i["exit"].(float64) != 0 {
-			t.Errorf("Expecting: 0 got: %v", i["exit"])
-		}
-		// check because
-		e := "Body regex match: molcajete"
-		if i["because"] != e {
-			t.Errorf("Expecting: %q, got: %v", e, i["because"])
-		}
-		// check retries
-		if i["retries"].(float64) != 2 {
-			t.Errorf("Expecting: 2 got: %v", i["retries"])
-		}
-		// check url
-		if _, ok := i["url"]; !ok {
-			t.Error("URL key not found")
-		}
-		// check output
-		if i["status"].(float64) != 200 {
-			t.Errorf("Expecting status: %d got: %v", 200, i["status"])
-		}
+		expect(t, 0, i.Exit)
+		expect(t, "Body regex match: molcajete", i.Because)
+		expect(t, 2, i.Retries)
+		expect(t, 200, i.Status)
 		wg.Done()
 	}))
-	defer log_s.Close()
+	defer logServer.Close()
 	s := make(Services)
 	re := regexp.MustCompile(`molcajete`)
 	s["s 1"] = &Service{
@@ -1169,7 +490,7 @@ func TestSuperviceRetrie(t *testing.T) {
 		URL:        server.URL,
 		RetryLimit: 3,
 		ReadLimit:  17,
-		Log:        log_s.URL,
+		Log:        logServer.URL,
 		Expect: Expect{
 			Status: 200,
 			Header: map[string]string{
@@ -1186,13 +507,8 @@ func TestSuperviceRetrie(t *testing.T) {
 	ez.Supervice(s["s 1"])()
 	wg.Wait()
 	// 1 try, 2 tries
-	rc := s["s 1"].retryCount
-	if rc != 2 {
-		t.Errorf("Expecting retryCount = 2 got: %d", rc)
-	}
-	if counter != 3 {
-		t.Errorf("Expecting 3 got: %v", counter)
-	}
+	expect(t, 2, s["s 1"].retryCount)
+	expect(t, 3, counter)
 }
 
 func TestSuperviceRetrieLimit(t *testing.T) {
@@ -1209,56 +525,36 @@ func TestSuperviceRetrieLimit(t *testing.T) {
 	server = httptest.NewServer(h)
 	defer server.Close()
 
-	log_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
+	logServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expect(t, "epazote", r.Header.Get("User-agent"))
 		decoder := json.NewDecoder(r.Body)
-		var i map[string]interface{}
+		var i Wanted
 		err := decoder.Decode(&i)
 		if err != nil {
 			t.Error(err)
 		}
-		// check exit
-		if i["exit"].(float64) != 1 {
-			t.Errorf("Expecting: 1 got: %v", i["exit"])
-		}
-		// check retries
-		if i["retries"].(float64) != 4 {
-			t.Errorf("Expecting: 4 got: %v", i["retries"])
-		}
-		// check url
-		if _, ok := i["url"]; !ok {
-			t.Error("URL key not found")
-		}
-		// check output
-		if i["status"].(float64) != 0 {
-			t.Errorf("Expecting status: %d got: %v", 0, i["status"])
-		}
+		expect(t, 1, i.Exit)
+		expect(t, 4, i.Retries)
+		expect(t, 0, i.Status)
 		wg.Done()
 	}))
-	defer log_s.Close()
+	defer logServer.Close()
 	s := make(Services)
 	s["s 1"] = &Service{
 		Name:          "s 1",
 		URL:           server.URL,
 		RetryLimit:    5,
 		RetryInterval: 1,
-		Log:           log_s.URL,
+		Log:           logServer.URL,
 		Expect: Expect{
 			Status: 200,
 		},
 	}
-	ez := &Epazote{
-		Services: s,
-	}
+	ez := &Epazote{Services: s}
 	wg.Add(1)
 	ez.Supervice(s["s 1"])()
 	wg.Wait()
-	rc := s["s 1"].retryCount
-	if rc != 4 {
-		t.Errorf("Expecting retryCount = 4 got: %d", rc)
-	}
+	expect(t, 4, s["s 1"].retryCount)
 }
 
 func TestSuperviceRetrieLimit0(t *testing.T) {
@@ -1274,36 +570,20 @@ func TestSuperviceRetrieLimit0(t *testing.T) {
 	}
 	server = httptest.NewServer(h)
 	defer server.Close()
-
-	log_s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
+	logServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expect(t, "epazote", r.Header.Get("User-agent"))
 		decoder := json.NewDecoder(r.Body)
-		var i map[string]interface{}
+		var i Wanted
 		err := decoder.Decode(&i)
 		if err != nil {
 			t.Error(err)
 		}
-		// check exit
-		if i["exit"].(float64) != 0 {
-			t.Errorf("Expecting: 0 got: %v", i["exit"])
-		}
-		// check retries
-		if _, ok := i["retries"]; ok {
-			t.Errorf("retries key found")
-		}
-		// check url
-		if _, ok := i["url"]; !ok {
-			t.Error("URL key not found")
-		}
-		// check output
-		if i["status"].(float64) != 200 {
-			t.Errorf("Expecting status: %d got: %v", 200, i["status"])
-		}
+		expect(t, 0, i.Exit)
+		expect(t, 0, i.Retries)
+		expect(t, 200, i.Status)
 		wg.Done()
 	}))
-	defer log_s.Close()
+	defer logServer.Close()
 	s := make(Services)
 	s["s 1"] = &Service{
 		Name:          "s 1",
@@ -1311,29 +591,27 @@ func TestSuperviceRetrieLimit0(t *testing.T) {
 		RetryLimit:    0,
 		RetryInterval: 1,
 		ReadLimit:     1024,
-		Log:           log_s.URL,
-		Expect: Expect{
-			Status: 200,
-		},
+		Log:           logServer.URL,
+		Expect:        Expect{Status: 200},
 	}
-	ez := &Epazote{
-		Services: s,
-	}
+	ez := &Epazote{Services: s}
 	wg.Add(1)
 	ez.Supervice(s["s 1"])()
 	wg.Wait()
-	rc := s["s 1"].retryCount
-	if rc != 0 {
-		t.Errorf("Expecting retryCount = 0 got: %d", rc)
-	}
+	expect(t, 0, s["s 1"].retryCount)
 }
 
 func TestSuperviceReadLimit(t *testing.T) {
-	var server *httptest.Server
-	var h http.HandlerFunc = func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "0123456789")
+	tmpfile, err := ioutil.TempFile("", "TestSuperviceReadLimit")
+	if err != nil {
+		t.Error(err)
 	}
-	server = httptest.NewServer(h)
+	defer os.Remove(tmpfile.Name())
+	log.SetOutput(tmpfile)
+	log.SetFlags(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "0123456789")
+	}))
 	defer server.Close()
 	s := make(Services)
 	s["s 1"] = &Service{
@@ -1344,20 +622,14 @@ func TestSuperviceReadLimit(t *testing.T) {
 			Status: 200,
 		},
 	}
-	ez := &Epazote{
-		Services: s,
-	}
+	ez := &Epazote{Services: s}
 	ez.debug = true
 	ez.Supervice(s["s 1"])()
 	rc := s["s 1"].retryCount
 	if rc != 0 {
 		t.Errorf("Expecting retryCount = 0 got: %d", rc)
 	}
-
-	//data := buf.String()
-	//re := regexp.MustCompile("(?m)[\r\n]+^01234$")
-	//match := re.FindString(data)
-	//if match == "" {
-	//t.Error("Expecting: 01234")
-	//}
+	b, _ := ioutil.ReadFile(tmpfile.Name())
+	re := regexp.MustCompile("(?m)[\r\n]+^01234$")
+	expect(t, true, re.Match(b))
 }
