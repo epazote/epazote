@@ -26,7 +26,7 @@ func TestReportNotifyHTTPDefault(t *testing.T) {
 	defer server.Close()
 	a := &Action{
 		HTTP: []HTTP{
-			HTTP{
+			{
 				URL: fmt.Sprintf("%s/?param=list", server.URL),
 			},
 		},
@@ -39,9 +39,7 @@ func TestReportNotifyHTTPDefault(t *testing.T) {
 
 func TestReportNotifyHTTPEmptyURL(t *testing.T) {
 	a := &Action{
-		HTTP: []HTTP{
-			HTTP{},
-		},
+		HTTP: []HTTP{{}},
 	}
 	e := &Epazote{}
 	s := &Service{}
@@ -61,10 +59,10 @@ func TestReportNotifyHTTPExitCode0(t *testing.T) {
 	defer server.Close()
 	a := &Action{
 		HTTP: []HTTP{
-			HTTP{
+			{
 				URL: fmt.Sprintf("%s/?exit=_exit_&status=_status_", server.URL),
 			},
-			HTTP{
+			{
 				URL: fmt.Sprintf("%s/?exit=_exit_", server.URL),
 			},
 		},
@@ -87,10 +85,10 @@ func TestReportNotifyHTTPExitCode1(t *testing.T) {
 	defer server.Close()
 	a := &Action{
 		HTTP: []HTTP{
-			HTTP{
+			{
 				URL: fmt.Sprintf("%s/?exit=0", server.URL),
 			},
-			HTTP{
+			{
 				URL: fmt.Sprintf("%s/?exit=1", server.URL),
 			},
 		},
@@ -132,7 +130,7 @@ func TestReportNotifyHTTPPost(t *testing.T) {
 	defer server.Close()
 	a := &Action{
 		HTTP: []HTTP{
-			HTTP{
+			{
 				URL:    server.URL,
 				Method: "post",
 				Data:   "room_id=10&from=Alerts&message=A+new+user+signed+up&status=_status_",
@@ -198,7 +196,7 @@ func TestReportNotifyThresholdHealthydUsing1HTTP(t *testing.T) {
 	e := &Epazote{}
 	a := &Action{
 		HTTP: []HTTP{
-			HTTP{
+			{
 				URL: fmt.Sprintf("%s/?exit=3", server.URL),
 			},
 		},
@@ -234,7 +232,7 @@ func TestReportNotifyThresholdUnhealthydUsing1HTTP(t *testing.T) {
 	e := &Epazote{}
 	a := &Action{
 		HTTP: []HTTP{
-			HTTP{
+			{
 				URL: fmt.Sprintf("%s/?exit=3", server.URL),
 			},
 		},
@@ -288,10 +286,10 @@ func TestReportNotifyThresholdXhealthyUsing2HTTP(t *testing.T) {
 		}
 		a := &Action{
 			HTTP: []HTTP{
-				HTTP{
+				{
 					URL: fmt.Sprintf("%s/?exit=0", server.URL),
 				},
-				HTTP{
+				{
 					URL: fmt.Sprintf("%s/?exit=1", server.URL),
 				},
 			},

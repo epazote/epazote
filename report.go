@@ -74,7 +74,7 @@ func (e *Epazote) Report(m MailMan, s *Service, a *Action, r *http.Response, eCo
 			// if available print the response headers
 			var rHeader []string
 			if r != nil {
-				for k, _ := range r.Header {
+				for k := range r.Header {
 					if k == "Set-Cookie" {
 						rHeader = append(rHeader, fmt.Sprintf("%s: %s", Yellow(k), r.Cookies()))
 					} else {
