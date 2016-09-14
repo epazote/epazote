@@ -266,6 +266,7 @@ func TestReportNotifyThresholdXhealthyUsing2HTTP(t *testing.T) {
 		r      Return
 		expect Expect
 	}{
+		// Healthy exitCode = 0, Unhealthy exitCode = 1
 		{
 			Return{0, 200, "because", "output"},
 			Expect{"epazote", "GET", "0"},
@@ -295,7 +296,6 @@ func TestReportNotifyThresholdXhealthyUsing2HTTP(t *testing.T) {
 				},
 			},
 		}
-		// Unhealthy exitCode = 1
 		e.Report(nil, service, a, nil, tt.r.exitCode, tt.r.httpStatus, tt.r.because, tt.r.output)
 		wg.Add(1)
 		e.Report(nil, service, a, nil, tt.r.exitCode, tt.r.httpStatus, tt.r.because, tt.r.output)
