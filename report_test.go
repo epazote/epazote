@@ -245,70 +245,60 @@ func TestReportNotifyThresholdUnhealthydUsing1HTTP(t *testing.T) {
 	wg.Wait()
 }
 
-func TestReportNotifyThresholdHealthyUsing2HTTP(t *testing.T) {
+func TestReportNotifyThresholdXhealthyUsing2HTTP(t *testing.T) {
 	var wg sync.WaitGroup
+	type Return struct {
+		exitCode, httpStatus int
+		because, output      string
+	}
+	type Expect struct {
+		ua, method, exit string
+	}
+	ex := Expect{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		expect(t, "epazote", r.Header.Get("User-agent"))
-		expect(t, "GET", r.Method)
-		expect(t, "0", r.FormValue("exit"))
+		expect(t, ex.ua, r.Header.Get("User-agent"))
+		expect(t, ex.method, r.Method)
+		expect(t, ex.exit, r.FormValue("exit"))
 		wg.Done()
 	}))
 	defer server.Close()
-	service := &Service{
-		Name: "s 1",
-		Threshold: Threshold{
-			Healthy:   2,
-			Unhealthy: 2,
+	var testTable = []struct {
+		r      Return
+		expect Expect
+	}{
+		{
+			Return{0, 200, "because", "output"},
+			Expect{"epazote", "GET", "0"},
+		},
+		{
+			Return{1, 200, "because", "output"},
+			Expect{"epazote", "GET", "1"},
 		},
 	}
-	e := &Epazote{}
-	a := &Action{
-		HTTP: []HTTP{
-			HTTP{
-				URL: fmt.Sprintf("%s/?exit=0", server.URL),
+	for _, tt := range testTable {
+		ex = tt.expect
+		e := &Epazote{}
+		service := &Service{
+			Name: "s 1",
+			Threshold: Threshold{
+				Healthy:   2,
+				Unhealthy: 2,
 			},
-			HTTP{
-				URL: fmt.Sprintf("%s/?exit=1", server.URL),
+		}
+		a := &Action{
+			HTTP: []HTTP{
+				HTTP{
+					URL: fmt.Sprintf("%s/?exit=0", server.URL),
+				},
+				HTTP{
+					URL: fmt.Sprintf("%s/?exit=1", server.URL),
+				},
 			},
-		},
+		}
+		// Unhealthy exitCode = 1
+		e.Report(nil, service, a, nil, tt.r.exitCode, tt.r.httpStatus, tt.r.because, tt.r.output)
+		wg.Add(1)
+		e.Report(nil, service, a, nil, tt.r.exitCode, tt.r.httpStatus, tt.r.because, tt.r.output)
+		wg.Wait()
 	}
-	// healthy exitCode = 0
-	e.Report(nil, service, a, nil, 0, 200, "because", "output")
-	wg.Add(1)
-	e.Report(nil, service, a, nil, 0, 200, "because", "output")
-	wg.Wait()
-}
-
-func TestReportNotifyThresholdUnhealthyUsing2HTTP(t *testing.T) {
-	var wg sync.WaitGroup
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		expect(t, "epazote", r.Header.Get("User-agent"))
-		expect(t, "GET", r.Method)
-		expect(t, "1", r.FormValue("exit"))
-		wg.Done()
-	}))
-	defer server.Close()
-	service := &Service{
-		Name: "s 1",
-		Threshold: Threshold{
-			Healthy:   2,
-			Unhealthy: 2,
-		},
-	}
-	e := &Epazote{}
-	a := &Action{
-		HTTP: []HTTP{
-			HTTP{
-				URL: fmt.Sprintf("%s/?exit=0", server.URL),
-			},
-			HTTP{
-				URL: fmt.Sprintf("%s/?exit=1", server.URL),
-			},
-		},
-	}
-	// Unhealthy exitCode = 1
-	e.Report(nil, service, a, nil, 1, 200, "because", "output")
-	wg.Add(1)
-	e.Report(nil, service, a, nil, 1, 200, "because", "output")
-	wg.Wait()
 }
