@@ -17,7 +17,7 @@ func (e *Epazote) Block() {
 	runtime.ReadMemStats(&m)
 	start := time.Now().UTC()
 	block := make(chan os.Signal)
-	signal.Notify(block, os.Interrupt, os.Kill, syscall.SIGTERM, syscall.SIGUSR1, syscall.SIGUSR2)
+	signal.Notify(block, syscall.SIGUSR1, syscall.SIGUSR2)
 	for {
 		signalType := <-block
 		switch signalType {
