@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// carriage return line feed
+// CRLF carriage return line feed
 const CRLF = "\r\n"
 
 // GetEmailAddress extract email address from a list

@@ -19,7 +19,7 @@ type Config struct {
 	Scan Scan  `yaml:"scan,omitempty"`
 }
 
-// Email
+// Email server details for sending email notifications
 type Email struct {
 	Username string            `yaml:",omitempty"`
 	Password string            `yaml:",omitempty"`
@@ -40,7 +40,7 @@ type Scan struct {
 	Every `yaml:",inline"`
 }
 
-// Services
+// Services list of services to check
 type Services map[string]*Service
 
 // Test to NO web services
@@ -90,7 +90,7 @@ type Expect struct {
 	IfNot  Action            `yaml:"if_not,omitempty"`
 }
 
-// Action
+// Action a corrective/notify action to perform
 type Action struct {
 	Cmd    string   `yaml:",omitempty"`
 	Notify string   `yaml:",omitempty"`
