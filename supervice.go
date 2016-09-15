@@ -87,6 +87,7 @@ func (e *Epazote) Supervice(s *Service) func() {
 			e.Report(m, s, &s.Expect.IfNot, res, 1, 0, fmt.Sprintf("GET: %s", err), e.Do(s.Expect.IfNot.Cmd, skip))
 			return
 		}
+		defer res.Body.Close()
 
 		// Read Body first and close if not used
 		if s.Expect.Body != "" {
@@ -97,7 +98,6 @@ func (e *Epazote) Supervice(s *Service) func() {
 			} else {
 				body, err = ioutil.ReadAll(res.Body)
 			}
-			res.Body.Close()
 			if err != nil {
 				log.Printf("Could not read Body for service %q, Error: %s", Red(s.Name), err)
 				return
@@ -111,7 +111,6 @@ func (e *Epazote) Supervice(s *Service) func() {
 			return
 		} else if s.ReadLimit > 0 {
 			chunkedBody, err := ioutil.ReadAll(io.LimitReader(res.Body, s.ReadLimit))
-			res.Body.Close()
 			if err != nil {
 				log.Printf("Could not read Body for service %q, read_limit %d, Error: %s", Red(s.Name), s.ReadLimit, err)
 				return
@@ -119,9 +118,6 @@ func (e *Epazote) Supervice(s *Service) func() {
 			if e.debug {
 				log.Printf("Service %q, read_limit: %d, Body: \n%s", s.Name, s.ReadLimit, chunkedBody)
 			}
-		} else {
-			// close body since will not be used anymore
-			res.Body.Close()
 		}
 
 		// if_status
