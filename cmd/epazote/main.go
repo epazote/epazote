@@ -9,7 +9,7 @@ import (
 	e "github.com/epazote/epazote"
 )
 
-var version, githash string
+var version string
 
 func main() {
 	var (
