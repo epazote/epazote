@@ -14,13 +14,14 @@ const (
 	shit = "1f4a9"
 )
 
+// New return a new epazote instance
 func New(file string) (*Epazote, error) {
-	yml_file, err := ioutil.ReadFile(file)
+	ymlFile, err := ioutil.ReadFile(file)
 	if err != nil {
 		return nil, err
 	}
 	var ez Epazote
-	if err := yaml.Unmarshal(yml_file, &ez); err != nil {
+	if err := yaml.Unmarshal(ymlFile, &ez); err != nil {
 		return nil, err
 	}
 	return &ez, nil
@@ -44,7 +45,7 @@ func (e *Epazote) CheckPaths() error {
 	return nil
 }
 
-// VerifyUrls, we can't supervice unreachable services
+// VerifyUrls check that services have a valid URL
 func (e *Epazote) VerifyUrls() error {
 	ch := AsyncGet(&e.Services)
 	for i := 0; i < len(e.Services); i++ {
@@ -63,7 +64,7 @@ func (e *Epazote) VerifyUrls() error {
 	return nil
 }
 
-// PathOrServices check if at least one path or service is set
+// PathsOrServices check if at least one path or service is set
 func (e *Epazote) PathsOrServices() error {
 	if len(e.Config.Scan.Paths) == 0 && e.Services == nil {
 		return fmt.Errorf("%s", Red("No services to supervices or paths to scan."))
@@ -88,21 +89,18 @@ func GetInterval(d int, e Every) int {
 	return every
 }
 
+// ParseScan search for yml files
 func ParseScan(file string) (Services, error) {
-	yml_file, err := ioutil.ReadFile(file)
+	ymlFile, err := ioutil.ReadFile(file)
 	if err != nil {
 		return nil, err
 	}
-
 	var s Services
-
-	if err := yaml.Unmarshal(yml_file, &s); err != nil {
+	if err := yaml.Unmarshal(ymlFile, &s); err != nil {
 		return nil, err
 	}
-
 	if len(s) == 0 {
 		return nil, fmt.Errorf("[%s] No services found.", Red(file))
 	}
-
 	return s, nil
 }

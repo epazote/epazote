@@ -128,11 +128,11 @@ func (e *Epazote) Report(m MailMan, s *Service, a *Action, r *http.Response, eCo
 	}
 
 	// sort the map
-	var report_keys []string
+	var reportKeys []string
 	for k := range parsed {
-		report_keys = append(report_keys, k)
+		reportKeys = append(reportKeys, k)
 	}
-	sort.Strings(report_keys)
+	sort.Strings(reportKeys)
 
 	// Send email or call http only once (avoid spam)
 	if notify {
@@ -182,7 +182,7 @@ func (e *Epazote) Report(m MailMan, s *Service, a *Action, r *http.Response, eCo
 			// set subject _(because exit name output status url)_
 			// replace the report status keys (json) in subject if present
 			subject := e.Config.SMTP.Headers["subject"]
-			for _, k := range report_keys {
+			for _, k := range reportKeys {
 				body += fmt.Sprintf("%s: %v %s", k, parsed[k], CRLF)
 				subject = strings.Replace(subject, fmt.Sprintf("_%s_", k), fmt.Sprintf("%v", parsed[k]), 1)
 			}
@@ -231,7 +231,7 @@ func (e *Epazote) Report(m MailMan, s *Service, a *Action, r *http.Response, eCo
 			switch strings.ToUpper(h.Method) {
 			case "POST":
 				// replace data with report_keys
-				for _, k := range report_keys {
+				for _, k := range reportKeys {
 					h.Data = strings.Replace(h.Data, fmt.Sprintf("_%s_", k), url.QueryEscape(fmt.Sprintf("%v", parsed[k])), 1)
 				}
 				go func() {
@@ -252,7 +252,7 @@ func (e *Epazote) Report(m MailMan, s *Service, a *Action, r *http.Response, eCo
 				}()
 			default:
 				// replace url params with report_keys
-				for _, k := range report_keys {
+				for _, k := range reportKeys {
 					h.URL = strings.Replace(h.URL, fmt.Sprintf("_%s_", k), url.QueryEscape(fmt.Sprintf("%v", parsed[k])), 1)
 				}
 				go func() {

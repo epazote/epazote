@@ -31,7 +31,7 @@ func TestTryExamplePanic(t *testing.T) {
 		retry = attempt < 5 // try 5 times
 		defer func() {
 			if r := recover(); r != nil {
-				err = errors.New(fmt.Sprintf("panic: %v", r))
+				err = fmt.Errorf("panic: %v", r)
 			}
 		}()
 		_, err = SomeFunction()
@@ -78,7 +78,7 @@ func TestTryPanics(t *testing.T) {
 		retry = attempt < 5
 		defer func() {
 			if r := recover(); r != nil {
-				err = errors.New(fmt.Sprintf("panic: %v", r))
+				err = fmt.Errorf("panic: %v", r)
 			}
 		}()
 		callCount++

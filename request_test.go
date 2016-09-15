@@ -91,6 +91,7 @@ func TestIsURL(t *testing.T) {
 		{"http://foobar.coffee/", true},
 		{"http://foobar.中文网/", true},
 		{"http://foobar.org/", true},
+		{"http://foobar.ORG", true},
 		{"http://foobar.org:8080/", true},
 		{"ftp://foobar.ru/", true},
 		{"ftp.foo.bar", true},
@@ -117,6 +118,7 @@ func TestIsURL(t *testing.T) {
 		{"http://www.foobar.com/~foobar", true},
 		{"http://www.-foobar.com/", false},
 		{"http://www.foo---bar.com/", false},
+		{"http://r6---snnvoxuioq6.googlevideo.com", true},
 		{"mailto:someone@example.com", true},
 		{"irc://irc.server.org/channel", false},
 		{"irc://#channel@network", true},
@@ -135,6 +137,9 @@ func TestIsURL(t *testing.T) {
 		{",foo.com", false},
 		// according to issues #62 #66
 		{"https://pbs.twimg.com/profile_images/560826135676588032/j8fWrmYY_normal.jpeg", true},
+		// according to #125
+		{"http://prometheus-alertmanager.service.q:9093", true},
+		{"https://www.logn-123-123.url.with.sigle.letter.d:12345/url/path/foo?bar=zzz#user", true},
 		{"http://me.example.com", true},
 		{"http://www.me.example.com", true},
 		{"https://farm6.static.flickr.com", true},

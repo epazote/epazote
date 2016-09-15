@@ -5,6 +5,7 @@ import (
 	"sync"
 )
 
+// Epazote parent struct
 type Epazote struct {
 	sync.Mutex `yaml:"-" json:"-"`
 	Config     Config
@@ -12,11 +13,13 @@ type Epazote struct {
 	debug      bool
 }
 
+// Config struct
 type Config struct {
 	SMTP Email `yaml:"smtp,omitempty"`
 	Scan Scan  `yaml:"scan,omitempty"`
 }
 
+// Email
 type Email struct {
 	Username string            `yaml:",omitempty"`
 	Password string            `yaml:",omitempty"`
@@ -26,22 +29,27 @@ type Email struct {
 	enabled  bool
 }
 
+// Every how often call/check the services
 type Every struct {
 	Seconds, Minutes, Hours int `yaml:",omitempty"`
 }
 
+// Scan paths to scan
 type Scan struct {
 	Paths []string `yaml:",omitempty"`
 	Every `yaml:",inline"`
 }
 
+// Services
 type Services map[string]*Service
 
+// Test to NO web services
 type Test struct {
 	Test  string `yaml:",omitempty" json:"test,omitempty"`
 	IfNot Action `yaml:"if_not,omitempty" json:"-"`
 }
 
+// Service struct
 type Service struct {
 	Name          string            `yaml:"-" json:"name"`
 	URL           string            `yaml:",omitempty" json:"url,omitempty"`
@@ -65,12 +73,14 @@ type Service struct {
 	retryCount    int
 }
 
+// Threshold default to 2
 type Threshold struct {
 	Healthy   int `yaml:",omitempty"`
 	Unhealthy int `yaml:",omitempty"`
 	healthy   int
 }
 
+// Expect do someting if not getting what you expect
 type Expect struct {
 	Body   string `yaml:",omitempty"`
 	body   *regexp.Regexp
@@ -80,6 +90,7 @@ type Expect struct {
 	IfNot  Action            `yaml:"if_not,omitempty"`
 }
 
+// Action
 type Action struct {
 	Cmd    string   `yaml:",omitempty"`
 	Notify string   `yaml:",omitempty"`
@@ -88,6 +99,7 @@ type Action struct {
 	HTTP   []HTTP   `yaml:"http,omitempty"`
 }
 
+// HTTP custom endpoints to call when notifying (hipchat)
 type HTTP struct {
 	URL    string            `yaml:",omitempty"`
 	Method string            `yaml:",omitempty"`
@@ -95,6 +107,7 @@ type HTTP struct {
 	Data   string            `yaml:",omitempty"`
 }
 
+// SSL notify before a certificate expires
 type SSL struct {
 	Every `yaml:",inline"`
 }

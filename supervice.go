@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// Do, execute the command in the if_not block
+// Do execute the command in the if_not block
 func (e *Epazote) Do(cmd string, skip bool) string {
 	if skip {
 		return "Skipping cmd"

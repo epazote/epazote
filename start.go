@@ -7,6 +7,7 @@ import (
 	"strings"
 )
 
+// Scheduler interface
 type Scheduler interface {
 	AddScheduler(string, int, func())
 }

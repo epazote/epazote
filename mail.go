@@ -9,21 +9,23 @@ import (
 	"strings"
 )
 
+// carriage return line feed
 const CRLF = "\r\n"
 
-// extract email address from a list
-func GetEmailAddress(s string) (error, []string) {
+// GetEmailAddress extract email address from a list
+func GetEmailAddress(s string) ([]string, error) {
 	var address []string
 	for _, v := range strings.Split(s, " ") {
 		e, err := mail.ParseAddress(v)
 		if err != nil {
-			return err, nil
+			return nil, err
 		}
 		address = append(address, e.Address)
 	}
-	return nil, address
+	return address, nil
 }
 
+// VerifyEmail verify the email struct
 func (e *Epazote) VerifyEmail() error {
 	//initialize Headers in case they don't exists
 	if e.Config.SMTP.Headers == nil {
@@ -39,7 +41,7 @@ func (e *Epazote) VerifyEmail() error {
 		if v.Expect.IfNot.Notify != "" {
 			notify = true
 			if v.Expect.IfNot.Notify != "yes" {
-				err, to := GetEmailAddress(v.Expect.IfNot.Notify)
+				to, err := GetEmailAddress(v.Expect.IfNot.Notify)
 				if err != nil {
 					return fmt.Errorf(Red("Verify notify email addresses for service: %s - %q"), k, err)
 				}
@@ -55,7 +57,7 @@ func (e *Epazote) VerifyEmail() error {
 		if v.IfNot.Notify != "" {
 			notify = true
 			if v.IfNot.Notify != "yes" {
-				err, to := GetEmailAddress(v.IfNot.Notify)
+				to, err := GetEmailAddress(v.IfNot.Notify)
 				if err != nil {
 					return fmt.Errorf(Red("Verify notify email addresses for service: %s - %q"), k, err)
 				}
@@ -74,7 +76,7 @@ func (e *Epazote) VerifyEmail() error {
 				if j.Notify != "" {
 					notify = true
 					if j.Notify != "yes" {
-						err, to := GetEmailAddress(j.Notify)
+						to, err := GetEmailAddress(j.Notify)
 						if err != nil {
 							return fmt.Errorf(Red("Verify notify email addresses for service [%q if_status: %d]: %q"), k, kS, err)
 						}
@@ -96,7 +98,7 @@ func (e *Epazote) VerifyEmail() error {
 				if j.Notify != "" {
 					notify = true
 					if j.Notify != "yes" {
-						err, to := GetEmailAddress(j.Notify)
+						to, err := GetEmailAddress(j.Notify)
 						if err != nil {
 							return fmt.Errorf(Red("Verify notify email addresses for service [%q if_header: %s]: %q"), k, kH, err)
 						}
@@ -149,7 +151,7 @@ func (e *Epazote) VerifyEmail() error {
 
 		// check To recipients
 		if val, ok := e.Config.SMTP.Headers["to"]; ok {
-			err, to := GetEmailAddress(val)
+			to, err := GetEmailAddress(val)
 			if err != nil {
 				return fmt.Errorf(Red("Verify recipient's email address: %s"), err)
 			}
