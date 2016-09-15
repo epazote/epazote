@@ -33,9 +33,6 @@ func (e *Epazote) Log(s *Service, status []byte) {
 
 // Report create report to send via log/email
 func (e *Epazote) Report(m MailMan, s *Service, a *Action, r *http.Response, eCode, sCode int, b, o string) {
-	e.Lock()
-	defer e.Unlock()
-
 	// set time
 	t := time.Now().UTC().Format(time.RFC3339)
 
