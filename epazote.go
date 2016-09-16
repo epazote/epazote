@@ -7,10 +7,10 @@ import (
 
 // Epazote parent struct
 type Epazote struct {
-	sync.Mutex `yaml:"-" json:"-"`
-	Config     Config
-	Services   Services
-	debug      bool
+	sync.RWMutex `yaml:"-" json:"-"`
+	Config       Config
+	Services     Services
+	debug        bool
 }
 
 // Config struct

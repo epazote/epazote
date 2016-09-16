@@ -13,8 +13,14 @@ get:
 	${GO} get
 
 build: get
-	${GO} get -u gopkg.in/yaml.v2;
-	${GO} build -ldflags "-X main.version=${VERSION}" -race -o ${BIN_NAME} cmd/epazote/main.go;
+# make RACE=true
+	@if test -n "${RACE}"; then \
+	${GO} get -u gopkg.in/yaml.v2; \
+	${GO} build -ldflags "-X main.version=${VERSION}" -race -o ${BIN_NAME} cmd/epazote/main.go; \
+	else \
+	${GO} get -u gopkg.in/yaml.v2; \
+	${GO} build -ldflags "-X main.version=${VERSION}" -o ${BIN_NAME} cmd/epazote/main.go; \
+	fi;
 
 clean:
 	@rm -rf ${BIN_NAME} ${BIN_NAME}.debug *.out build debian

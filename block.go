@@ -22,8 +22,9 @@ func (e *Epazote) Block() {
 		signalType := <-block
 		switch signalType {
 		case syscall.SIGUSR1, syscall.SIGUSR2:
-			// this creates a race condition due the map
+			e.RLock()
 			y, err := yaml.Marshal(&e)
+			e.RUnlock()
 			if err != nil {
 				log.Printf("Error: %v", err)
 			}
