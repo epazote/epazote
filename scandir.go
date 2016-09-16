@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"time"
 )
 
 // Scan return func() to work with the scheduler
@@ -65,6 +66,7 @@ func (e *Epazote) search(root string) error {
 					v.RetryLimit = 3
 				}
 
+				e.Lock()
 				// Add/Update existing services
 				if _, ok := e.Services[k]; !ok {
 					e.Services[k] = v
@@ -75,6 +77,10 @@ func (e *Epazote) search(root string) error {
 					e.Services[k].status = lastStatus
 					e.Services[k].action = lastAction
 				}
+				e.Unlock()
+
+				// race condition
+				time.Sleep(3 * time.Second)
 
 				if e.debug {
 					log.Printf(Green("Found epazote.yml in path: %s updating/adding service: %q"), path, k)

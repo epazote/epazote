@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	"gopkg.in/yaml.v2"
+	yaml "gopkg.in/yaml.v2"
 )
 
 // Block stop until signal received
@@ -22,6 +22,7 @@ func (e *Epazote) Block() {
 		signalType := <-block
 		switch signalType {
 		case syscall.SIGUSR1, syscall.SIGUSR2:
+			// this creates a race condition due the map
 			y, err := yaml.Marshal(&e)
 			if err != nil {
 				log.Printf("Error: %v", err)

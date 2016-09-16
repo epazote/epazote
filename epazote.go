@@ -1,12 +1,16 @@
 package epazote
 
-import "regexp"
+import (
+	"regexp"
+	"sync"
+)
 
 // Epazote parent struct
 type Epazote struct {
-	Config   Config
-	Services Services
-	debug    bool
+	sync.Mutex `yaml:"-" json:"-"`
+	Config     Config
+	Services   Services
+	debug      bool
 }
 
 // Config struct

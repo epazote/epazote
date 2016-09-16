@@ -57,6 +57,11 @@ func (e *Epazote) Start(sk Scheduler, debug bool) {
 		sk.AddScheduler(k, GetInterval(60, v.Every), e.Supervice(v))
 	}
 
+	// initialize map in case of no services
+	if e.Services == nil {
+		e.Services = make(map[string]*Service)
+	}
+
 	if len(e.Config.Scan.Paths) > 0 {
 		for _, v := range e.Config.Scan.Paths {
 			sk.AddScheduler(v, GetInterval(300, e.Config.Scan.Every), e.Scan(v))

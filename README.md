@@ -1,5 +1,5 @@
 [![Download](https://api.bintray.com/packages/nbari/epazote/epazote/images/download.svg)](https://bintray.com/nbari/epazote/epazote/_latestVersion)
-[![Build Status](https://travis-ci.org/epazote/epazote.svg?branch=develop)](https://travis-ci.org/epazote/epazote)
+[![Build Status](https://travis-ci.org/epazote/epazote.svg?branch=master)](https://travis-ci.org/epazote/epazote)
 [![Coverage Status](https://coveralls.io/repos/github/epazote/epazote/badge.svg?branch=develop)](https://coveralls.io/github/epazote/epazote?branch=develop)
 [![Go Report Card](https://goreportcard.com/badge/github.com/epazote/epazote)](https://goreportcard.com/report/github.com/epazote/epazote)
 
