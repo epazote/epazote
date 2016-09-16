@@ -20,11 +20,11 @@ func New(file string) (*Epazote, error) {
 	if err != nil {
 		return nil, err
 	}
-	var ez Epazote
-	if err := yaml.Unmarshal(ymlFile, &ez); err != nil {
+	var e Epazote
+	if err := yaml.Unmarshal(ymlFile, &e); err != nil {
 		return nil, err
 	}
-	return &ez, nil
+	return &e, nil
 }
 
 // CheckPaths verify that directories exist and are readable

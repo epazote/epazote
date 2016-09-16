@@ -41,14 +41,12 @@ func main() {
 	}
 
 	// scan check config and clean paths
-	err = cfg.CheckPaths()
-	if err != nil {
+	if err = cfg.CheckPaths(); err != nil {
 		log.Fatalln(err)
 	}
 
 	// verify URL, we can't supervice unreachable services
-	err = cfg.VerifyUrls()
-	if err != nil {
+	if err = cfg.VerifyUrls(); err != nil {
 		if !*c {
 			log.Fatalln(err)
 		}
@@ -56,14 +54,12 @@ func main() {
 	}
 
 	// check that at least a path or service are set
-	err = cfg.PathsOrServices()
-	if err != nil {
+	if err = cfg.PathsOrServices(); err != nil {
 		log.Fatalln(err)
 	}
 
 	// verifyEMAIL recipients & headers
-	err = cfg.VerifyEmail()
-	if err != nil {
+	if err = cfg.VerifyEmail(); err != nil {
 		log.Fatalln(err)
 	}
 

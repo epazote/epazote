@@ -65,5 +65,9 @@ func (e *Epazote) Start(sk Scheduler, debug bool) {
 		}
 	}
 
-	log.Printf("Epazote %c   on %d services, scan paths: %s [pid: %d]", Icon(herb), len(e.Services), strings.Join(e.Config.Scan.Paths, ","), os.Getpid())
+	log.Printf("Epazote %c   on %d services, scan paths: %s [pid: %d]",
+		Icon(herb),
+		len(e.Services),
+		strings.Join(e.Config.Scan.Paths, ","),
+		os.Getpid())
 }
