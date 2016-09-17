@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -632,4 +633,43 @@ func TestSuperviceReadLimit(t *testing.T) {
 	b, _ := ioutil.ReadFile(tmpfile.Name())
 	re := regexp.MustCompile("(?m)[\r\n]+^01234$")
 	expect(t, true, re.Match(b))
+}
+
+func TestSSL(t *testing.T) {
+	var wg sync.WaitGroup
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expect(t, "epazote", r.Header.Get("User-agent"))
+		fmt.Fprintln(w, "Hello, epazote")
+	}))
+	defer server.Close()
+	logServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expect(t, "epazote", r.Header.Get("User-agent"))
+		decoder := json.NewDecoder(r.Body)
+		var i Wanted
+		err := decoder.Decode(&i)
+		if err != nil {
+			t.Error(err)
+		}
+		expect(t, 1, i.Exit)
+		expect(t, 0, i.Retries)
+		expect(t, 200, i.Status)
+		expect(t, true, strings.HasPrefix(i.Because, "cert"))
+		wg.Done()
+	}))
+	defer logServer.Close()
+	s := make(Services)
+	s["ssl"] = &Service{
+		Name:     "ssl",
+		URL:      server.URL,
+		Log:      logServer.URL,
+		Insecure: true,
+		Expect: Expect{
+			Status: 200,
+			SSL:    SSL{Every{Hours: 876600}},
+		},
+	}
+	ez := &Epazote{Services: s}
+	wg.Add(1)
+	ez.Supervice(s["ssl"])()
+	wg.Wait()
 }

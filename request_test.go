@@ -163,9 +163,7 @@ func TestIsURL(t *testing.T) {
 
 func TestHTTPGetTimeout(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
+		expect(t, "epazote", r.Header.Get("User-agent"))
 		time.Sleep(2 * time.Second)
 		fmt.Fprintln(w, "Hello, epazote")
 	}))
@@ -179,9 +177,7 @@ func TestHTTPGetTimeout(t *testing.T) {
 
 func TestHTTPGetTimeoutNoFollow(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
+		expect(t, "epazote", r.Header.Get("User-agent"))
 		time.Sleep(2 * time.Second)
 		fmt.Fprintln(w, "Hello, epazote")
 	}))
@@ -195,9 +191,7 @@ func TestHTTPGetTimeoutNoFollow(t *testing.T) {
 
 func TestHTTPGetInsecure(t *testing.T) {
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
+		expect(t, "epazote", r.Header.Get("User-agent"))
 		fmt.Fprintln(w, "Hello, epazote")
 	}))
 	defer ts.Close()
@@ -210,9 +204,7 @@ func TestHTTPGetInsecure(t *testing.T) {
 
 func TestHTTPGetInsecureVerify(t *testing.T) {
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-agent") != "epazote" {
-			t.Error("Expecting User-agent: epazote")
-		}
+		expect(t, "epazote", r.Header.Get("User-agent"))
 		fmt.Fprintln(w, "Hello, epazote")
 	}))
 	defer ts.Close()
