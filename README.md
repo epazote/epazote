@@ -4,7 +4,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/epazote/epazote)](https://goreportcard.com/report/github.com/epazote/epazote)
 
 # Epazote 🌿
-Automated HTTP supervisor
+Automated HTTP microservices supervisor
 
 **Epazote** automatically update/add services specified in a file call
 ``epazote.yml``. Periodically checks the defined endpoints and execute recovery
