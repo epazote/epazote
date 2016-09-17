@@ -1,8 +1,6 @@
 package epazote
 
-import (
-	"testing"
-)
+import "testing"
 
 type fakeScheduler struct {
 	services map[string]int
@@ -26,14 +24,21 @@ func TestStart(t *testing.T) {
 	sk := &fakeScheduler{make(map[string]int)}
 	cfg.Start(sk, true)
 
-	if sk.services["/my/service/path"] != 3600 {
-		t.Errorf("Expecting 3600 got: %v", sk.services["/my/services/path"])
-	}
-	if sk.services["service 1"] != 30 {
-		t.Errorf("Expecting 30 got: %v", sk.services["service 1"])
-	}
-	if sk.services["check pid"] != 60 {
-		t.Errorf("Expecting 60 got: %v", sk.services["check pid"])
-	}
+	expect(t, 3600, sk.services["/my/service/path"])
+	expect(t, 30, sk.services["service 1"])
+	expect(t, 60, sk.services["check pid"])
+}
 
+func TestStartNoServices(t *testing.T) {
+	cfg, err := New("test/epazote-start-noservices.yml")
+	if err != nil {
+		t.Error(err)
+	}
+	err = cfg.PathsOrServices()
+	if err != nil {
+		t.Error(err)
+	}
+	sk := &fakeScheduler{make(map[string]int)}
+	cfg.Start(sk, true)
+	expect(t, 0, len(cfg.Services))
 }

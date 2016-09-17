@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -299,4 +300,21 @@ func TestReportNotifyThresholdXhealthyUsing2HTTP(t *testing.T) {
 		e.Report(nil, service, a, nil, tt.r.exitCode, tt.r.httpStatus, tt.r.because, tt.r.output)
 		wg.Wait()
 	}
+}
+
+func TestLog(t *testing.T) {
+	tmpfile, err := ioutil.TempFile("", "TestLog")
+	if err != nil {
+		t.Error(err)
+	}
+	defer os.Remove(tmpfile.Name())
+	log.SetOutput(tmpfile)
+	log.SetFlags(0)
+	e := &Epazote{}
+	e.debug = true
+	s := &Service{Log: "--http--"}
+	e.Log(s, []byte("hello"))
+	b, _ := ioutil.ReadFile(tmpfile.Name())
+	re := regexp.MustCompile("unsupported protocol scheme")
+	expect(t, true, re.Match(b))
 }
