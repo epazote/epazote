@@ -302,6 +302,60 @@ func TestReportNotifyThresholdXhealthyUsing2HTTP(t *testing.T) {
 	}
 }
 
+func TestReportNotifyHTTPError(t *testing.T) {
+	type Return struct {
+		exitCode, httpStatus int
+		because, output      string
+	}
+	type Expect struct {
+		ua, method, exit string
+	}
+	var testTable = []struct {
+		a *Action
+	}{
+		// Healthy exitCode = 0, Unhealthy exitCode = 1
+		{
+			&Action{
+				HTTP: []HTTP{
+					{
+						URL:    "exit=POST",
+						Method: "post",
+					},
+				},
+			},
+		},
+		{
+			&Action{
+				HTTP: []HTTP{
+					{
+						URL: "exit=GET",
+					},
+				},
+			},
+		},
+	}
+	tmpfile, err := ioutil.TempFile("", "TestReportNotifyHTTPError")
+	if err != nil {
+		t.Error(err)
+	}
+	defer os.Remove(tmpfile.Name())
+	for _, tt := range testTable {
+		log.SetOutput(tmpfile)
+		log.SetFlags(0)
+		e := &Epazote{}
+		service := &Service{Name: tt.a.HTTP[0].URL}
+		e.Report(nil, service, tt.a, nil, 1, 200, "because", "output")
+	}
+	time.Sleep(time.Second)
+	b, _ := ioutil.ReadFile(tmpfile.Name())
+	re := regexp.MustCompile("unsupported protocol scheme")
+	expect(t, true, re.Match(b))
+	re = regexp.MustCompile("exit=POST")
+	expect(t, true, re.Match(b))
+	re = regexp.MustCompile("exit=GET")
+	expect(t, true, re.Match(b))
+}
+
 func TestLog(t *testing.T) {
 	tmpfile, err := ioutil.TempFile("", "TestLog")
 	if err != nil {

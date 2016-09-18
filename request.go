@@ -65,7 +65,10 @@ func HTTPGet(url string, follow, insecure bool, h map[string]string, timeout ...
 	client.Transport = tr
 
 	// create a new request
-	req, _ := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("User-Agent", "epazote")
 
 	// set custom headers on request
@@ -96,7 +99,10 @@ func HTTPGet(url string, follow, insecure bool, h map[string]string, timeout ...
 // HTTPPost post service json data
 func HTTPPost(url string, data []byte, h map[string]string) (*http.Response, error) {
 	// create a new request
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(data))
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("User-Agent", "epazote")
 	req.Header.Set("Content-Type", "application/json")
 
