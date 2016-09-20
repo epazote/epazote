@@ -2,7 +2,7 @@
 
 GO ?= go
 BIN_NAME=epazote
-GO_XC = ${GOPATH}/bin/goxc -os="freebsd openbsd netbsd solaris dragonfly darwin linux"
+GO_XC = ${GOPATH}/bin/goxc -os="freebsd openbsd netbsd darwin linux"
 GOXC_FILE = .goxc.json
 GOXC_FILE_LOCAL = .goxc.local.json
 VERSION=$(shell git describe --tags --always)
