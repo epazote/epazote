@@ -3,6 +3,7 @@ Changelog
 
 ## 2.0.0
 - SSL Alert before certificate expires ``ssl``
+- Threshold healthy/unhealthy
 - When debugging cookies are properly parsed
 - Cleaned up the tests
 
