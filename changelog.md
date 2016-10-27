@@ -1,6 +1,9 @@
 Changelog
 =========
 
+## 2.1.0
+- fixed a bug on report.go https://github.com/epazote/epazote/issues/3
+
 ## 2.0.0
 - SSL Alert before certificate expires ``ssl``
 - Threshold healthy/unhealthy
