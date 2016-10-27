@@ -176,7 +176,7 @@ func (e *Epazote) Report(m MailMan, s *Service, a *Action, r *http.Response, eCo
 				msg[0] = a.Msg[0]
 			}
 
-			body += fmt.Sprintf("%s %s%s", msg[s.status], CRLF, CRLF)
+			body += fmt.Sprintf("%s %s%s", msg[eCode], CRLF, CRLF)
 
 			// set subject _(because exit name output status url)_
 			// replace the report status keys (json) in subject if present
