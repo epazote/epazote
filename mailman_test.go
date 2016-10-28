@@ -78,6 +78,7 @@ func TestReport(t *testing.T) {
 		r   Return
 		s   string
 		m   string
+		th  int //Threshold
 	}{
 		{
 			&Action{Notify: "33test@ejemplo.org", Msg: []string{"OK", "NO OK"}, Emoji: []string{"1f621"}},
@@ -88,6 +89,7 @@ func TestReport(t *testing.T) {
 			Return{1, 200, "because", "output"},
 			"Subject: =?UTF-8?b?8J+SqSAgW25hbWUsIGJlY2F1c2Vd?=",
 			"",
+			2,
 		},
 		{
 			&Action{Notify: "yes", Msg: []string{"testing notifications"}},
@@ -100,6 +102,7 @@ func TestReport(t *testing.T) {
 			Return{1, 200, "because", "output"},
 			"Subject: =?UTF-8?b?8J+SqSAgW25hbWU6IG5hbWUgLSBleGl0IC0gdXJsIC0gYmVjYXVzZV0=?=",
 			"",
+			2,
 		},
 		{
 			&Action{Notify: "yes", Msg: []string{"testing notifications"}, Emoji: []string{"0"}},
@@ -112,6 +115,7 @@ func TestReport(t *testing.T) {
 			Return{1, 200, "because", "output"},
 			"Subject: [s 1, because]",
 			"",
+			2,
 		},
 		{
 			&Action{Notify: "yes", Msg: []string{"testing notifications"}, Emoji: []string{"1F621"}},
@@ -124,6 +128,7 @@ func TestReport(t *testing.T) {
 			Return{0, 200, "because", "output"},
 			"Subject: =?UTF-8?b?8J+YoSAgW3MgMSwgYmVjYXVzZV0=?=",
 			"",
+			2,
 		},
 		{
 			&Action{Notify: "yes", Msg: []string{"testing notifications"}, Emoji: []string{"1f44c", "1f44e"}},
@@ -136,6 +141,7 @@ func TestReport(t *testing.T) {
 			Return{0, 200, "because", "output"},
 			"Subject: =?UTF-8?b?8J+RjCAgW3MgMSwgYmVjYXVzZV0=?=",
 			"",
+			2,
 		},
 		{
 			&Action{Notify: "yes", Msg: []string{"testing notifications"}, Emoji: []string{"1f44c", "1f44e"}},
@@ -148,6 +154,7 @@ func TestReport(t *testing.T) {
 			Return{1, 200, "because", "output"},
 			"Subject: =?UTF-8?b?8J+RjiAgW3MgMSwgYmVjYXVzZV0=?=",
 			"",
+			2,
 		},
 		{
 			&Action{Notify: "yes", Msg: []string{"msg-1", "msg-2"}},
@@ -160,6 +167,7 @@ func TestReport(t *testing.T) {
 			Return{0, 200, "because", "output"},
 			"Subject: =?UTF-8?b?8J+MvyAgW3MgMSwgYmVjYXVzZV0=?=",
 			"msg-1",
+			2,
 		},
 		{
 			&Action{Notify: "yes", Msg: []string{"msg-1", "msg-2"}},
@@ -172,6 +180,7 @@ func TestReport(t *testing.T) {
 			Return{1, 200, "because", "output"},
 			"Subject: =?UTF-8?b?8J+SqSAgW3MgMSwgYmVjYXVzZV0=?=",
 			"msg-2",
+			4,
 		},
 	}
 	var wg sync.WaitGroup
@@ -200,9 +209,17 @@ func TestReport(t *testing.T) {
 			Expect: Expect{
 				Status: 200,
 			},
+			Threshold: Threshold{
+				Healthy:   tt.th,
+				Unhealthy: tt.th,
+			},
 		}
 		wg.Add(1)
-		e.Report(sender, service, tt.a, nil, tt.r.exitCode, tt.r.httpStatus, tt.r.because, tt.r.output)
+		x := 0
+		for x < tt.th {
+			e.Report(sender, service, tt.a, nil, tt.r.exitCode, tt.r.httpStatus, tt.r.because, tt.r.output)
+			x++
+		}
 		wg.Wait()
 		expect(t, "server:587", r.addr)
 		expect(t, tt.h["from"], r.from)
