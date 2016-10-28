@@ -128,7 +128,7 @@ func TestReport(t *testing.T) {
 			Return{0, 200, "because", "output"},
 			"Subject: =?UTF-8?b?8J+YoSAgW3MgMSwgYmVjYXVzZV0=?=",
 			"",
-			2,
+			1,
 		},
 		{
 			&Action{Notify: "yes", Msg: []string{"testing notifications"}, Emoji: []string{"1f44c", "1f44e"}},
@@ -216,7 +216,7 @@ func TestReport(t *testing.T) {
 		}
 		wg.Add(1)
 		x := 0
-		for x < tt.th {
+		for x < tt.th*2 {
 			e.Report(sender, service, tt.a, nil, tt.r.exitCode, tt.r.httpStatus, tt.r.because, tt.r.output)
 			x++
 		}

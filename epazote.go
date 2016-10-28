@@ -53,6 +53,7 @@ type Test struct {
 type Service struct {
 	Name          string            `yaml:"-" json:"name"`
 	URL           string            `yaml:",omitempty" json:"url,omitempty"`
+	Disable       bool              `yaml:",omitempty" json:"-"`
 	Follow        bool              `yaml:",omitempty" json:"-"`
 	Header        map[string]string `yaml:",omitempty" json:"-"`
 	IfHeader      map[string]Action `yaml:"if_header,omitempty" json:"-"`
