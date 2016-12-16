@@ -23,7 +23,7 @@ func TestScanReturnFunc(t *testing.T) {
 func TestScanSearchNonexistentRoot(t *testing.T) {
 	log.SetOutput(ioutil.Discard)
 	s := new(Epazote)
-	err := s.search("nonexistent")
+	err := s.search("nonexistent", false)
 	if err == nil {
 		t.Error("Expecting: lstat nonexistent: no such file or directory")
 	}
@@ -31,7 +31,7 @@ func TestScanSearchNonexistentRoot(t *testing.T) {
 
 func TestScanSearch(t *testing.T) {
 	s := new(Epazote)
-	err := s.search("test")
+	err := s.search("test", false)
 	if err != nil {
 		t.Error(err)
 	}
@@ -55,7 +55,7 @@ func TestScanParseScanErr(t *testing.T) {
 	err = ioutil.WriteFile(fmt.Sprintf("%s/epazote.yml", d), f, 0644)
 
 	s := new(Epazote)
-	err = s.search(d)
+	err = s.search(d, false)
 	if err == nil {
 		t.Error(err)
 	}
@@ -89,7 +89,7 @@ func TestScanParseScanSearchOk(t *testing.T) {
 		Services: make(map[string]*Service),
 	}
 	s.debug = true
-	err = s.search(d)
+	err = s.search(d, false)
 	if err != nil {
 		t.Error(err)
 	}
@@ -123,7 +123,7 @@ func TestScanParseScanSearchBadRegex(t *testing.T) {
 	err = ioutil.WriteFile(fmt.Sprintf("%s/epazote.yml", d), f, 0644)
 
 	s := new(Epazote)
-	s.search(d)
+	s.search(d, false)
 	if err != nil {
 		t.Error(err)
 	}
@@ -174,7 +174,7 @@ func TestScanParseScanLast(t *testing.T) {
 	ez := &Epazote{
 		Services: s,
 	}
-	ez.search(d)
+	ez.search(d, false)
 	if err != nil {
 		t.Error(err)
 	}

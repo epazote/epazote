@@ -66,7 +66,7 @@ func (e *Epazote) Start(sk Scheduler, debug bool) {
 		for _, v := range e.Config.Scan.Paths {
 			sk.AddScheduler(v, GetInterval(300, e.Config.Scan.Every), e.Scan(v))
 			// schedule the scan but also scan at the beginning
-			go e.search(v)
+			go e.search(v, false)
 		}
 	}
 

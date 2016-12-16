@@ -5,17 +5,20 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
+	"time"
 )
 
 // Scan return func() to work with the scheduler
 func (e *Epazote) Scan(dir string) func() {
 	return func() {
-		e.search(dir)
+		e.search(dir, true)
 	}
 }
 
-// search walk through defined paths
-func (e *Epazote) search(root string) error {
+// search walk through defined paths if check is true
+// if will only update if modtime < refresh interval
+func (e *Epazote) search(root string, check bool) error {
 	if e.debug {
 		log.Printf("Starting scan in: %s", root)
 	}
@@ -24,7 +27,15 @@ func (e *Epazote) search(root string) error {
 			return err
 		}
 
-		if f.Name() == "epazote.yml" {
+		if strings.HasSuffix(f.Name(), "epazote.yml") {
+			// only update if has been updated since last scan
+			if check {
+				interval := GetInterval(300, e.Config.Scan.Every)
+				if int(time.Now().Sub(f.ModTime()).Seconds()) > interval {
+					return nil
+				}
+			}
+
 			srv, err := ParseScan(path)
 			if err != nil {
 				return err
@@ -84,7 +95,11 @@ func (e *Epazote) search(root string) error {
 
 				// schedule service
 				e.RLock()
-				sk.AddScheduler(k, GetInterval(60, v.Every), e.Supervice(e.Services[k]))
+				if v.Disable {
+					sk.Stop(k)
+				} else {
+					sk.AddScheduler(k, GetInterval(60, v.Every), e.Supervice(e.Services[k]))
+				}
 				e.RUnlock()
 			}
 		}
