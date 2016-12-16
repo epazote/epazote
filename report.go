@@ -47,6 +47,8 @@ func (e *Epazote) Report(m MailMan, s *Service, a *Action, r *http.Response, eCo
 		if s.action != nil {
 			a = s.action
 		}
+	} else {
+		s.Threshold.healthy = 0
 	}
 
 	// create status report

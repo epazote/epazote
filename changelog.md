@@ -1,6 +1,9 @@
 Changelog
 =========
 
+## 2.1.1
+- fixed report.go to send alert if site is healthy
+
 ## 2.1.0
 - fixed a bug on report.go https://github.com/epazote/epazote/issues/3
 
