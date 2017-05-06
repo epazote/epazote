@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	yaml "gopkg.in/yaml.v2"
+	yaml "github.com/go-yaml/yaml"
 )
 
 // Block stop until signal received
