@@ -100,7 +100,7 @@ type Action struct {
 	HTTP   []HTTP   `yaml:"http,omitempty"`
 }
 
-// HTTP custom endpoints to call when notifying (hipchat)
+// HTTP custom endpoints to call when notifying for example hipchat
 type HTTP struct {
 	URL    string            `yaml:",omitempty"`
 	Method string            `yaml:",omitempty"`
