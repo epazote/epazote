@@ -16,10 +16,10 @@ build: get
 # make RACE=true
 	@if test -n "${RACE}"; then \
 	${GO} get -u github.com/go-yaml/yaml; \
-	${GO} build -ldflags "-X main.version=${VERSION}" -race -o ${BIN_NAME} cmd/epazote/main.go; \
+	${GO} build -ldflags "-s -w -X main.version=${VERSION}" -race -o ${BIN_NAME} cmd/epazote/main.go; \
 	else \
 	${GO} get -u github.com/go-yaml/yaml; \
-	${GO} build -ldflags "-X main.version=${VERSION}" -o ${BIN_NAME} cmd/epazote/main.go; \
+	${GO} build -ldflags "-s -w -X main.version=${VERSION}" -o ${BIN_NAME} cmd/epazote/main.go; \
 	fi;
 
 clean:
