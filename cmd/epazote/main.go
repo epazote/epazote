@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
 	"os"
 
 	e "github.com/epazote/epazote"
@@ -27,40 +26,46 @@ func main() {
 	}
 
 	if _, err := os.Stat(*f); os.IsNotExist(err) {
-		fmt.Printf("Cannot read configuration file: %s, use -h for more info.\n\n", *f)
+		fmt.Fprintf(os.Stderr, "Cannot read configuration file: %s, use -h for more info.\n\n", *f)
 		os.Exit(1)
 	}
 
 	cfg, err := e.New(*f)
 	if err != nil {
-		log.Fatalln(err)
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 
 	if cfg == nil {
-		log.Fatalln("Check config file sintax.")
+		fmt.Fprintln(os.Stderr, "Check config file sintax.")
+		os.Exit(1)
 	}
 
 	// scan check config and clean paths
 	if err = cfg.CheckPaths(); err != nil {
-		log.Fatalln(err)
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 
 	// verify URL, we can't supervice unreachable services
 	if err = cfg.VerifyUrls(); err != nil {
 		if !*c {
-			log.Fatalln(err)
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
 		}
-		log.Println(err)
+		fmt.Fprintln(os.Stderr, err)
 	}
 
 	// check that at least a path or service are set
 	if err = cfg.PathsOrServices(); err != nil {
-		log.Fatalln(err)
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 
 	// verifyEMAIL recipients & headers
 	if err = cfg.VerifyEmail(); err != nil {
-		log.Fatalln(err)
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 
 	// create a Scheduler
