@@ -31,7 +31,7 @@ spend their free time creating things the rest the community can use.
 Don't have time to contribute? No worries, here are some other ways to show your
 support for **epazote**:
 
-- star the [project](https://github.com/epazote/epazote)
+- star :start: the [project](https://github.com/epazote/epazote)
 - tweet your support for **epazote**
 
 ## Issues
