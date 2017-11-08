@@ -165,8 +165,7 @@ func (e *Epazote) Supervice(s *Service) func() {
 			// alert 72 hours before by default if no ssl-expiry set
 			abce := GetInterval(259200, s.Expect.SSL.Every)
 			for _, cert := range res.TLS.PeerCertificates {
-				expiresIn := int(cert.NotAfter.Sub(time.Now().UTC()).Seconds())
-				if expiresIn <= abce {
+				if cert.NotAfter.Sub(time.Now().UTC()) <= abce {
 					e.Report(m, s, &s.Expect.IfNot, res, 1, res.StatusCode, fmt.Sprintf("cert: %s expires in: %s", cert.Subject.CommonName, cert.NotAfter.Format(time.RFC1123Z)), "")
 					return
 				}

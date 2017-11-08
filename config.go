@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	yaml "github.com/go-yaml/yaml"
+	"github.com/go-yaml/yaml"
 )
 
 const (
@@ -32,7 +32,7 @@ func (e *Epazote) CheckPaths() error {
 	if len(e.Config.Scan.Paths) > 0 {
 		for k, d := range e.Config.Scan.Paths {
 			if _, err := os.Stat(d); os.IsNotExist(err) {
-				return fmt.Errorf("Verify that directory: %s, exists and is readable.", d)
+				return fmt.Errorf("verify that directory: %s, exists and is readable", d)
 			}
 			r, err := filepath.EvalSymlinks(d)
 			if err != nil {
@@ -70,37 +70,4 @@ func (e *Epazote) PathsOrServices() error {
 		return fmt.Errorf("%s", Red("No services to supervices or paths to scan."))
 	}
 	return nil
-}
-
-// GetInterval return the check interval in seconds
-func GetInterval(d int, e Every) int {
-	// default to 60 seconds
-	if d < 1 {
-		d = 60
-	}
-	every := d
-	if e.Seconds > 0 {
-		return e.Seconds
-	} else if e.Minutes > 0 {
-		return 60 * e.Minutes
-	} else if e.Hours > 0 {
-		return 3600 * e.Hours
-	}
-	return every
-}
-
-// ParseScan search for yml files
-func ParseScan(file string) (Services, error) {
-	ymlFile, err := ioutil.ReadFile(file)
-	if err != nil {
-		return nil, err
-	}
-	var s Services
-	if err := yaml.Unmarshal(ymlFile, &s); err != nil {
-		return nil, err
-	}
-	if len(s) == 0 {
-		return nil, fmt.Errorf("[%s] No services found.", Red(file))
-	}
-	return s, nil
 }

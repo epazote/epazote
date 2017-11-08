@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	e "github.com/epazote/epazote"
+	"github.com/epazote/epazote"
 )
 
 var version string
@@ -26,11 +26,11 @@ func main() {
 	}
 
 	if _, err := os.Stat(*f); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Cannot read configuration file: %s, use -h for more info.\n\n", *f)
+		fmt.Fprintf(os.Stderr, "Cannot read configuration file: %s, use -h for more info.\n", *f)
 		os.Exit(1)
 	}
 
-	cfg, err := e.New(*f)
+	cfg, err := epazote.New(*f)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -69,7 +69,7 @@ func main() {
 	}
 
 	// create a Scheduler
-	sk := e.GetScheduler()
+	sk := epazote.GetScheduler()
 
 	cfg.Start(sk, *d)
 

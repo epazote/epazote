@@ -13,7 +13,7 @@ func Try(fn Func) error {
 	var (
 		err     error
 		cont    bool
-		attempt int = 1
+		attempt = 1
 	)
 	for {
 		cont, err = fn(attempt)

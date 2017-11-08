@@ -5,11 +5,12 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Scheduler interface
 type Scheduler interface {
-	AddScheduler(string, int, func())
+	AddScheduler(string, time.Duration, func())
 }
 
 // Start Add services to scheduler

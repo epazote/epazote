@@ -3,16 +3,16 @@ package epazote
 import (
 	"sync"
 
-	sk "github.com/epazote/scheduler"
+	"github.com/epazote/scheduler"
 )
 
-var instance *sk.Scheduler
+var instance *scheduler.Scheduler
 var once sync.Once
 
 // GetScheduler return the scheduler
-func GetScheduler() *sk.Scheduler {
+func GetScheduler() *scheduler.Scheduler {
 	once.Do(func() {
-		instance = sk.New()
+		instance = scheduler.New()
 	})
 	return instance
 }

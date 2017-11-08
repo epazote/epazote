@@ -31,7 +31,7 @@ func (e *Epazote) search(root string, check bool) error {
 			// only update if has been updated since last scan
 			if check {
 				interval := GetInterval(300, e.Config.Scan.Every)
-				if int(time.Now().Sub(f.ModTime()).Seconds()) > interval {
+				if time.Now().Sub(f.ModTime()) > interval {
 					return nil
 				}
 			}

@@ -16,25 +16,25 @@ const URL string = `^((ftp|https?):\/\/)?(\S+(:\S*)?@)?((([1-9]\d?|1\d\d|2[01]\d
 
 var rxURL = regexp.MustCompile(URL)
 
-// ServiceHttpResponse return struct
-type ServiceHttpResponse struct {
+// ServiceHTTPResponse return struct
+type ServiceHTTPResponse struct {
 	Err     error
 	Service string
 }
 
 // AsyncGet used as a URL validation method
-func AsyncGet(s *Services) <-chan ServiceHttpResponse {
-	ch := make(chan ServiceHttpResponse, len(*s))
+func AsyncGet(s *Services) <-chan ServiceHTTPResponse {
+	ch := make(chan ServiceHTTPResponse, len(*s))
 
 	for k, v := range *s {
-		go func(name string, url string, verify bool, h map[string]string) {
+		go func(name, url string, verify bool, h map[string]string) {
 			res, err := HTTPGet(url, true, verify, h)
 			if err != nil {
-				ch <- ServiceHttpResponse{err, name}
+				ch <- ServiceHTTPResponse{err, name}
 				return
 			}
 			res.Body.Close()
-			ch <- ServiceHttpResponse{nil, name}
+			ch <- ServiceHTTPResponse{nil, name}
 		}(k, v.URL, v.Insecure, v.Header)
 	}
 
@@ -44,7 +44,7 @@ func AsyncGet(s *Services) <-chan ServiceHttpResponse {
 // HTTPGet creates a new http request
 func HTTPGet(url string, follow, insecure bool, h map[string]string, timeout ...int) (*http.Response, error) {
 	// timeout in seconds defaults to 5
-	var t int = 5
+	t := 5
 
 	if len(timeout) > 0 {
 		t = timeout[0]
