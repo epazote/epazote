@@ -32,7 +32,7 @@ func (e *Epazote) Do(cmd string, skip bool) string {
 	return "No defined cmd"
 }
 
-// Supervice check services
+// Supervice check service
 func (e *Epazote) Supervice(s *Service) func() {
 	return func() {
 		defer func() {

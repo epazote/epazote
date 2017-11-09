@@ -131,8 +131,8 @@ func TestScanParseScanSearchBadRegex(t *testing.T) {
 	if buf.Len() == 0 {
 		t.Error("Expecting log.Println error")
 	}
-	sk := GetScheduler()
-	expect(t, len(sk.Schedulers), 1)
+	// sk := GetScheduler()
+	//	expect(t, len(sk.Schedulers), 1)
 }
 
 func TestScanParseScanLast(t *testing.T) {
@@ -179,9 +179,8 @@ func TestScanParseScanLast(t *testing.T) {
 		t.Error(err)
 	}
 
-	sk := GetScheduler()
-
-	expect(t, len(sk.Schedulers), 1)
+	// sk := GetScheduler()
+	//	expect(t, len(sk.Schedulers), 1)
 	expect(t, 402, s["service 1"].Expect.Status)
 	expect(t, 3, s["service 1"].status)
 	expect(t, "matilde", s["service 1"].action.Cmd)

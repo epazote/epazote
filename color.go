@@ -22,10 +22,10 @@ func Yellow(s string) string {
 	return fmt.Sprintf("%s[0;33m%s%s[0;00m", escape, s, escape)
 }
 
-// Icon Unicode Hex to string
+// Icon Unicode Hex to rune
 func Icon(h string) rune {
-	i, e := strconv.ParseInt(h, 16, 32)
-	if e != nil {
+	i, err := strconv.ParseInt(h, 16, 32)
+	if err != nil {
 		return 0
 	}
 	return rune(i)

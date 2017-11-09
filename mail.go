@@ -4,26 +4,12 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log"
-	"net/mail"
 	"os"
 	"strings"
 )
 
 // CRLF carriage return line feed
 const CRLF = "\r\n"
-
-// GetEmailAddress extract email address from a list
-func GetEmailAddress(s string) ([]string, error) {
-	var address []string
-	for _, v := range strings.Split(s, " ") {
-		e, err := mail.ParseAddress(v)
-		if err != nil {
-			return nil, err
-		}
-		address = append(address, e.Address)
-	}
-	return address, nil
-}
 
 // VerifyEmail verify the email struct
 func (e *Epazote) VerifyEmail() error {
@@ -43,12 +29,12 @@ func (e *Epazote) VerifyEmail() error {
 			if v.Expect.IfNot.Notify != "yes" {
 				to, err := GetEmailAddress(v.Expect.IfNot.Notify)
 				if err != nil {
-					return fmt.Errorf(Red("Verify notify email addresses for service: %s - %q"), k, err)
+					return fmt.Errorf(Red("verify notify email addresses for service: %s - %q"), k, err)
 				}
 				v.Expect.IfNot.Notify = strings.Join(to, " ")
 			} else if v.Expect.IfNot.Notify == "yes" {
 				if _, ok := e.Config.SMTP.Headers["to"]; !ok {
-					return fmt.Errorf(Red("Service %q need smtp/headers/to settings to be available to notify."), k)
+					return fmt.Errorf(Red("service %q need smtp/headers/to settings to be available to notify."), k)
 				}
 			}
 		}

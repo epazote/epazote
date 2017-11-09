@@ -1,13 +1,16 @@
 package epazote
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 type fakeScheduler struct {
 	services map[string]int
 }
 
-func (sk *fakeScheduler) AddScheduler(name string, interval int, f func()) {
-	sk.services[name] = interval
+func (sk *fakeScheduler) AddScheduler(name string, interval time.Duration, f func()) {
+	sk.services[name] = int(interval)
 }
 
 func (sk fakeScheduler) StopAll() {}

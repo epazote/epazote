@@ -3,10 +3,25 @@ package epazote
 import (
 	"fmt"
 	"io/ioutil"
+	"net/mail"
+	"strings"
 	"time"
 
 	"github.com/go-yaml/yaml"
 )
+
+// GetEmailAddress extract email address from a list
+func GetEmailAddress(s string) ([]string, error) {
+	var address []string
+	for _, v := range strings.Split(s, " ") {
+		e, err := mail.ParseAddress(v)
+		if err != nil {
+			return nil, err
+		}
+		address = append(address, e.Address)
+	}
+	return address, nil
+}
 
 // GetInterval return the check interval in seconds
 func GetInterval(d int, e Every) time.Duration {

@@ -9,19 +9,14 @@ import (
 	"github.com/go-yaml/yaml"
 )
 
-const (
-	herb = "1f33f"
-	shit = "1f4a9"
-)
-
 // New return a new epazote instance
 func New(file string) (*Epazote, error) {
-	ymlFile, err := ioutil.ReadFile(file)
+	f, err := ioutil.ReadFile(file)
 	if err != nil {
 		return nil, err
 	}
 	var e Epazote
-	if err := yaml.Unmarshal(ymlFile, &e); err != nil {
+	if err := yaml.Unmarshal(f, &e); err != nil {
 		return nil, err
 	}
 	return &e, nil
@@ -67,7 +62,7 @@ func (e *Epazote) VerifyUrls() error {
 // PathsOrServices check if at least one path or service is set
 func (e *Epazote) PathsOrServices() error {
 	if len(e.Config.Scan.Paths) == 0 && e.Services == nil {
-		return fmt.Errorf("%s", Red("No services to supervices or paths to scan."))
+		return fmt.Errorf("%s", Red("no services to supervices or paths to scan"))
 	}
 	return nil
 }

@@ -1,6 +1,13 @@
 Changelog
 =========
 
+## 3.0.0 unreleased
+- Using sync.Map in scheduler
+- Scheduler accepts now `time.Duration` as interval instead of `ints`
+- Cleaned tests
+- Code refactoring
+
+
 ## 2.1.1
 - fixed report.go to send alert if site is healthy
 

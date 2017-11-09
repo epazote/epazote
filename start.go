@@ -23,18 +23,18 @@ func (e *Epazote) Start(sk Scheduler, debug bool) {
 		// Set service name
 		v.Name = k
 
-		// Status
+		// Status defaults to 200
 		if v.Expect.Status < 1 {
 			v.Expect.Status = 200
 		}
 
-		// rxBody
+		// rxBody - will panic if expression cannot be parsed
 		if v.Expect.Body != "" {
 			re := regexp.MustCompile(v.Expect.Body)
 			v.Expect.body = re
 		}
 
-		// retry
+		// retry interval in milliseconds
 		if v.RetryInterval == 0 {
 			v.RetryInterval = 500
 		}
@@ -42,6 +42,7 @@ func (e *Epazote) Start(sk Scheduler, debug bool) {
 			v.RetryLimit = 3
 		}
 
+		//  for no web services (man test)
 		if v.Test.Test != "" {
 			v.Test.Test = strings.TrimSpace(v.Test.Test)
 		}
@@ -54,7 +55,7 @@ func (e *Epazote) Start(sk Scheduler, debug bool) {
 			}
 		}
 
-		// schedule the service
+		// schedule the service defaults to every minute if interval is not defined (every)
 		sk.AddScheduler(k, GetInterval(60, v.Every), e.Supervice(v))
 	}
 
@@ -65,6 +66,7 @@ func (e *Epazote) Start(sk Scheduler, debug bool) {
 
 	if len(e.Config.Scan.Paths) > 0 {
 		for _, v := range e.Config.Scan.Paths {
+			// scan every 5 minutes by default if interval is not defined (every)
 			sk.AddScheduler(v, GetInterval(300, e.Config.Scan.Every), e.Scan(v))
 			// schedule the scan but also scan at the beginning
 			go e.search(v, false)
