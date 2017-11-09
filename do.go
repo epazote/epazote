@@ -5,16 +5,15 @@ import "fmt"
 func DoTest(url string) Decorator {
 	return func(t Task) func() {
 		return func() {
-			fmt.Println("satisfy interface")
+			fmt.Println("do test")
 		}
 	}
 }
 
-/*
 func DoGet() Decorator {
-	return func(t Task) Task {
-		fmt.Println("DoGet")
-		return t
+	return func(t Task) func() {
+		return func() {
+			fmt.Println("do get")
+		}
 	}
 }
-*/

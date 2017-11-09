@@ -31,7 +31,7 @@ func (e *Epazote) Supervice(s *Service) func() {
 	//	},
 	x := func() { println("okok") }
 	task := Decorate(x,
-		//		DoGet(),
+		DoGet(),
 		DoTest(s.URL),
 	)
 	return task
