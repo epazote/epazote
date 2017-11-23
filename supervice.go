@@ -13,25 +13,6 @@ import (
 	"time"
 )
 
-// Do execute the command in the if_not block
-func (e *Epazote) Do(cmd string, skip bool) string {
-	if skip {
-		return "Skipping cmd"
-	}
-	if cmd != "" {
-		var shell = "sh"
-		if sh := os.Getenv("SHELL"); sh != "" {
-			shell = sh
-		}
-		out, err := exec.Command(shell, "-c", cmd).CombinedOutput()
-		if err != nil {
-			return err.Error()
-		}
-		return string(out)
-	}
-	return "No defined cmd"
-}
-
 // Supervice check service
 func (e *Epazote) Supervice(s *Service) func() {
 	return func() {
@@ -178,4 +159,23 @@ func (e *Epazote) Supervice(s *Service) func() {
 			return
 		}
 	}
+}
+
+// Do execute the command in the if_not block
+func (e *Epazote) Do(cmd string, skip bool) string {
+	if skip {
+		return "Skipping cmd"
+	}
+	if cmd != "" {
+		var shell = "sh"
+		if sh := os.Getenv("SHELL"); sh != "" {
+			shell = sh
+		}
+		out, err := exec.Command(shell, "-c", cmd).CombinedOutput()
+		if err != nil {
+			return err.Error()
+		}
+		return string(out)
+	}
+	return "No defined cmd"
 }
