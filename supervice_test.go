@@ -24,7 +24,7 @@ type Wanted struct {
 	Test    string
 }
 
-func TestSupervice(t *testing.T) {
+func TestSupervice1(t *testing.T) {
 	var wg sync.WaitGroup
 	wa := Wanted{}
 	type Return struct {
@@ -354,14 +354,16 @@ func TestSupervice(t *testing.T) {
 		},
 	}
 	for _, tt := range testTable {
-		wa = tt.expect
-		rs = tt.r
-		e := &Epazote{
-			Services: tt.s,
-		}
-		wg.Add(1)
-		e.Supervice(tt.s["s 1"])()
-		wg.Wait()
+		t.Run(tt.s["s 1"].Name, func(t *testing.T) {
+			wa = tt.expect
+			rs = tt.r
+			e := &Epazote{
+				Services: tt.s,
+			}
+			wg.Add(1)
+			e.Supervice(tt.s["s 1"])()
+			wg.Wait()
+		})
 	}
 }
 

@@ -13,6 +13,17 @@ import (
 	"time"
 )
 
+// report - filled every time the supervisor check the service
+type report struct {
+	action     *Action
+	because    string
+	exitCode   int
+	output     string
+	resp       *http.Response
+	service    *Service
+	statusCode int
+}
+
 // Supervice check service
 func (e *Epazote) Supervice(s *Service) func() {
 	return func() {
@@ -22,7 +33,12 @@ func (e *Epazote) Supervice(s *Service) func() {
 			}
 		}()
 
-		// Mailman instance
+		// create an empty report
+		r := &report{
+			service: s,
+		}
+
+		// TODO remove later, and find a way to handle multiple notifiers, email,http,influx,etc
 		m := NewMailMan(&e.Config.SMTP)
 
 		// skip "do cmd", to avoid a loop
@@ -45,9 +61,16 @@ func (e *Epazote) Supervice(s *Service) func() {
 			var out bytes.Buffer
 			cmd.Stdout = &out
 			if err := cmd.Run(); err != nil {
+				r.action = &s.Test.IfNot
+				r.exitCode = 1
+				r.because = fmt.Sprintf("Test cmd: %s", err)
+				r.output = e.Do(s.Test.IfNot.Cmd, skip)
+				// TODO test
 				e.Report(m, s, &s.Test.IfNot, nil, 1, 0, fmt.Sprintf("Test cmd: %s", err), e.Do(s.Test.IfNot.Cmd, skip))
 				return
 			}
+			r.because = fmt.Sprintf("Test cmd: %s", out.String())
+			// TODO tests
 			e.Report(m, s, nil, nil, 0, 0, fmt.Sprintf("Test cmd: %s", out.String()), "")
 			return
 		}
