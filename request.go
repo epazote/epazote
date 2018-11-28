@@ -61,8 +61,7 @@ func HTTPGet(url string, follow, insecure bool, h map[string]string, timeout ...
 		ResponseHeaderTimeout: time.Duration(t) * time.Second,
 	}
 
-	client := &http.Client{}
-	client.Transport = tr
+	client := &http.Client{Transport: tr}
 
 	// create a new request
 	req, _ := http.NewRequest("GET", url, nil)
