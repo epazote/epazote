@@ -1,7 +1,0 @@
-services:
-    service 1:
-        url: http://httpbin.org/status/402
-        seconds: 5
-
-        expect:
-            status: 402

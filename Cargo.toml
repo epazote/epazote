@@ -1,0 +1,28 @@
+[package]
+name = "epazote"
+version = "0.1.0"
+authors = ["Nicolas Embriz <nbari@tequila.io>"]
+description = "Automated HTTP (microservices) supervisor 🌿"
+documentation = "https://docs.rs/epazote/latest/epazote/"
+homepage = "https://epazote.io"
+repository = "https://github.com/epazote/epazote/"
+readme = "README.md"
+keywords = ["metrics", "supervisor", "monitoring"]
+categories = ["command-line-utilities", "monitoring"]
+edition = "2021"
+license = "BSD-3-Clause"
+
+[dependencies]
+anyhow = "1"
+clap = "4.5"
+ignore = "0.4"
+openssl = { version = "0.10", optional = true, features = ["vendored"] }
+opentelemetry = "0.27"
+opentelemetry-otlp = { version = "0.27", features = ["tls"] }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-opentelemetry = "0.28"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }

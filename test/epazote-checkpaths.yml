@@ -1,5 +1,0 @@
-config:
-    scan:
-        seconds: 30
-        paths:
-            - test
