@@ -14,12 +14,15 @@ license = "BSD-3-Clause"
 
 [dependencies]
 anyhow = "1"
+axum = "0.7.9"
 clap = "4.5"
+futures = "0.3.31"
 ignore = "0.4"
 openssl = { version = "0.10", optional = true, features = ["vendored"] }
 opentelemetry = "0.27"
 opentelemetry-otlp = { version = "0.27", features = ["tls"] }
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+prometheus = "0.13.4"
 reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
