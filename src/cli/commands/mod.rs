@@ -3,7 +3,7 @@ use clap::{
         styling::{AnsiColor, Effects, Styles},
         ValueParser,
     },
-    Arg, ColorChoice, Command,
+    Arg, ArgAction, ColorChoice, Command,
 };
 use std::{env, fs, path::PathBuf};
 
@@ -41,10 +41,10 @@ pub fn new() -> Command {
                 .value_name("FILE"),
         )
         .arg(
-            Arg::new("debug")
-                .short('d')
-                .long("debug")
-                .help("Debug mode")
-                .num_args(0),
+            Arg::new("verbose")
+                .short('v')
+                .long("verbose")
+                .help("Increase verbosity, -vv for debug")
+                .action(ArgAction::Count),
         )
 }

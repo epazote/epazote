@@ -1,0 +1,11 @@
+---
+services:
+  myip:
+    url: https://www.myip.country
+    every: 1m
+    expect:
+      status: 200
+      ssl:
+        hours: 72
+      if_not:
+        cmd: echo -n "myip.country down"

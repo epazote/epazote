@@ -345,7 +345,7 @@ dependencies = [
 
 [[package]]
 name = "epazote"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -355,6 +355,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "reqwest",
+ "serde",
  "serde_yaml",
  "tokio",
  "tracing",

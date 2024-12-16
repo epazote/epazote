@@ -1,6 +1,6 @@
 [package]
 name = "epazote"
-version = "0.1.0"
+version = "0.3.0"
 authors = ["Nicolas Embriz <nbari@tequila.io>"]
 description = "Automated HTTP (microservices) supervisor 🌿"
 documentation = "https://docs.rs/epazote/latest/epazote/"
@@ -21,6 +21,7 @@ opentelemetry = "0.27"
 opentelemetry-otlp = { version = "0.27", features = ["tls"] }
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
 reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"

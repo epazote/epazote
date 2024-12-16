@@ -4,5 +4,5 @@ use std::path::PathBuf;
 
 #[derive(Debug)]
 pub enum Action {
-    Run { config: PathBuf, debug: bool },
+    Run { config: PathBuf },
 }

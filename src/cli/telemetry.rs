@@ -32,15 +32,15 @@ fn init_tracer() -> Result<Tracer> {
 /// # Errors
 /// Will return an error if the telemetry layer fails to start
 pub fn init(verbosity_level: Option<Level>) -> Result<()> {
-    let verbosity_level = verbosity_level.unwrap_or(Level::INFO);
+    let verbosity_level = verbosity_level.unwrap_or(Level::ERROR);
 
     let tracer = init_tracer()?;
 
     let otel_tracer_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
     let fmt_layer = fmt::layer()
-        .with_file(true)
-        .with_line_number(true)
+        .with_file(false)
+        .with_line_number(false)
         .with_thread_ids(false)
         .with_thread_names(false)
         .with_target(false)
