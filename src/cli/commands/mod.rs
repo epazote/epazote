@@ -41,6 +41,15 @@ pub fn new() -> Command {
                 .value_name("FILE"),
         )
         .arg(
+            Arg::new("port")
+                .short('p')
+                .long("port")
+                .help("Port to listen for HTTP metrics")
+                .default_value("8080")
+                .value_parser(clap::value_parser!(u16))
+                .value_name("PORT"),
+        )
+        .arg(
             Arg::new("verbose")
                 .short('v')
                 .long("verbose")

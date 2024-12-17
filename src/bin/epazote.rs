@@ -5,10 +5,10 @@ use epazote::cli::{actions, actions::Action, start};
 #[tokio::main]
 async fn main() -> Result<()> {
     // Start the program
-    let (action, globals) = start()?;
+    let action = start()?;
 
     match action {
-        Action::Run { .. } => actions::run::handle(action, globals).await?,
+        Action::Run { .. } => actions::run::handle(action).await?,
     }
 
     Ok(())

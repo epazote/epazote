@@ -2,7 +2,7 @@
 services:
   myip:
     url: https://www.myip.country
-    every: 1m
+    every: 1s
     expect:
       status: 200
       ssl:

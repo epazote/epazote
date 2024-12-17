@@ -1,69 +1,22 @@
 use crate::cli::{
-    actions::Action,
+    actions::{
+        metrics::{metrics_server, ServiceMetrics},
+        Action,
+    },
     config::{Config, ServiceDetails},
-    globals::GlobalArgs,
 };
 use anyhow::{anyhow, Result};
-use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Router};
-use prometheus::{histogram_opts, opts, HistogramVec, IntCounterVec, IntGaugeVec, Registry};
 use reqwest::Client;
 use std::{env, sync::Arc};
-use tokio::{
-    net::TcpListener,
-    time::{interval, Instant},
-};
+use tokio::time::{interval, Instant};
 use tracing::{debug, error, info, instrument};
-
-// Metrics struct to hold our Prometheus metrics
-pub struct ServiceMetrics {
-    registry: Arc<Registry>,
-    service_status: IntGaugeVec,           // Current state
-    service_failures_total: IntCounterVec, // Cumulative failures
-    service_response_time: HistogramVec,
-}
-
-impl ServiceMetrics {
-    fn new() -> Result<Self> {
-        let registry = Arc::new(Registry::new());
-
-        let service_status = IntGaugeVec::new(
-            opts!("service_status", "Service status (0 = OK, 1 = FAIL)"),
-            &["service_name"],
-        )?;
-
-        let service_failures_total = IntCounterVec::new(
-            opts!("service_failures_total", "Total number of service failures"),
-            &["service_name"],
-        )?;
-
-        let service_response_time = HistogramVec::new(
-            histogram_opts!(
-                "service_response_time_seconds",
-                "Service response time in seconds"
-            ),
-            &["service_name"],
-        )?;
-
-        // Register metrics with the registry
-        registry.register(Box::new(service_status.clone()))?;
-        registry.register(Box::new(service_failures_total.clone()))?;
-        registry.register(Box::new(service_response_time.clone()))?;
-
-        Ok(Self {
-            registry,
-            service_status,
-            service_failures_total,
-            service_response_time,
-        })
-    }
-}
 
 static APP_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"), ")");
 
 /// Handle the create action
 #[instrument(skip(action))]
-pub async fn handle(action: Action, _globals: GlobalArgs) -> Result<()> {
-    let Action::Run { config } = action;
+pub async fn handle(action: Action) -> Result<()> {
+    let Action::Run { config, port } = action;
 
     let config_path = config;
 
@@ -80,6 +33,7 @@ pub async fn handle(action: Action, _globals: GlobalArgs) -> Result<()> {
 
         let client = reqwest::Client::builder()
             .user_agent(APP_USER_AGENT)
+            .timeout(service_details.timeout)
             .build()?;
 
         // Clone the metrics for this task
@@ -95,10 +49,12 @@ pub async fn handle(action: Action, _globals: GlobalArgs) -> Result<()> {
 
     // Spawn metrics server
     let metrics_server_handle = tokio::spawn(async move {
-        if let Err(e) = metrics_server(service_metrics).await {
+        if let Err(e) = metrics_server(service_metrics, port).await {
             error!("Metrics server error: {}", e);
         }
     });
+
+    info!("Epazote 🌿 is running");
 
     // Wait for all tasks to complete
     tokio::select! {
@@ -111,58 +67,6 @@ pub async fn handle(action: Action, _globals: GlobalArgs) -> Result<()> {
     }
 
     Ok(())
-}
-
-pub async fn metrics_server(metrics: Arc<ServiceMetrics>) -> Result<()> {
-    let port = 8080;
-
-    let app = Router::new()
-        .route("/metrics", get(metrics_handler))
-        .with_state(metrics);
-
-    let listener = match TcpListener::bind(format!("::0:{port}")).await {
-        Ok(listener) => listener,
-        Err(_) => TcpListener::bind(format!("0.0.0.0:{port}")).await?,
-    };
-
-    info!("Metrics server listening on port {}", port);
-
-    axum::serve(listener, app.into_make_service())
-        .await
-        .map_err(|e| anyhow!("Server error: {}", e))
-}
-
-pub async fn metrics_handler(State(metrics): State<Arc<ServiceMetrics>>) -> impl IntoResponse {
-    info!("Handling metrics request");
-
-    let encoder = prometheus::TextEncoder::new();
-    let metric_families = metrics.registry.gather();
-
-    if metric_families.is_empty() {
-        error!("No metrics collected in the registry.");
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "No metrics collected in the registry",
-        )
-            .into_response();
-    }
-
-    let mut metrics_str = String::new();
-
-    match encoder.encode_utf8(&metric_families, &mut metrics_str) {
-        Ok(_) => {
-            info!("Metrics encoded successfully.");
-            (StatusCode::OK, metrics_str).into_response()
-        }
-        Err(e) => {
-            error!("Failed to encode metrics: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to encode metrics",
-            )
-                .into_response()
-        }
-    }
 }
 
 /// Runs the task for a single service
@@ -182,7 +86,15 @@ async fn run_service(
         // Perform the service scan
         match scan_service(&service_name, &service_details, &client, &metrics).await {
             Ok(_) => (),
-            Err(e) => error!("Error scanning service '{}': {}", service_name, e),
+            Err(e) => {
+                // Increment failure counter
+                metrics
+                    .service_failures_total
+                    .with_label_values(&[&service_name])
+                    .inc();
+
+                error!("Error scanning service '{}': {}", &service_name, e);
+            }
         }
     }
 }
@@ -210,17 +122,11 @@ async fn scan_service(
 
     // Capture exit code, defaulting to 0
     if status.as_u16() != service_details.expect.status {
-        // Set service status to FAIL (1)
+        // Set service status to FAIL (0)
         metrics
             .service_status
             .with_label_values(&[service_name])
-            .set(1);
-
-        // Increment failure counter
-        metrics
-            .service_failures_total
-            .with_label_values(&[service_name])
-            .inc();
+            .set(0);
 
         if let Some(if_not) = &service_details.expect.if_not {
             let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
@@ -245,11 +151,11 @@ async fn scan_service(
             );
         };
     } else {
-        // Set service status to OK (0)
+        // Set service status to OK (1)
         metrics
             .service_status
             .with_label_values(&[service_name])
-            .set(0);
+            .set(1);
 
         info!(
             service_name = service_name,
