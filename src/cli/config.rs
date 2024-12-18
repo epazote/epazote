@@ -32,18 +32,23 @@ pub struct SmtpHeaders {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ServiceDetails {
-    pub url: String,
-    #[serde(deserialize_with = "parse_duration", default = "default_timeout")]
-    pub timeout: Duration, // Store as `Duration` for easier usage
     #[serde(deserialize_with = "parse_duration")]
     pub every: Duration, // Store as `Duration` for easier usage
+    pub expect: Expect,
+    pub follow: Option<bool>,
     pub header: Option<HashMap<String, String>>,
     #[serde(rename = "if_header")]
     pub if_header: Option<HashMap<String, Action>>,
     #[serde(rename = "if_status")]
     pub if_status: Option<HashMap<String, Action>>,
     pub insecure: Option<bool>,
-    pub expect: Expect,
+    #[serde(rename = "read_limit")]
+    pub read_limit: Option<i64>,
+    pub stop: Option<i8>,
+    pub test: Option<String>,
+    #[serde(deserialize_with = "parse_duration", default = "default_timeout")]
+    pub timeout: Duration,
+    pub url: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -62,6 +67,11 @@ pub struct Action {
     pub msg: Option<String>,
     pub emoji: Option<String>,
     pub http: Option<String>,
+}
+
+// Default timeout value
+const fn default_timeout() -> Duration {
+    Duration::from_secs(5)
 }
 
 impl Config {
@@ -101,9 +111,4 @@ fn parse_duration_str(input: &str) -> Result<Duration> {
         "d" => Ok(Duration::from_secs(value * 60 * 60 * 24)),
         _ => Err(anyhow!("Invalid duration unit: {}", unit)),
     }
-}
-
-// Default timeout value
-fn default_timeout() -> Duration {
-    Duration::from_secs(5)
 }
