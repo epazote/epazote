@@ -6,7 +6,10 @@ use crate::cli::{
     config::{Config, ServiceDetails},
 };
 use anyhow::{anyhow, Result};
-use reqwest::Client;
+use reqwest::{
+    header::{HeaderMap, HeaderName, HeaderValue},
+    Client,
+};
 use std::{env, sync::Arc};
 use tokio::time::{interval, Instant};
 use tracing::{debug, error, info, instrument};
@@ -31,10 +34,31 @@ pub async fn handle(action: Action) -> Result<()> {
         let service_name = service_name.clone();
         let service_details = service.clone();
 
-        let client = reqwest::Client::builder()
-            .user_agent(APP_USER_AGENT)
+        let mut builder = reqwest::Client::builder()
             .timeout(service_details.timeout)
-            .build()?;
+            .user_agent(APP_USER_AGENT);
+
+        // Disable redirects if follow is not set
+        if service_details.follow_redirects.is_none() {
+            builder = builder.redirect(reqwest::redirect::Policy::none());
+        }
+
+        // Conditionally add headers if they are provided
+        if let Some(headers) = &service_details.headers {
+            let mut header_map = HeaderMap::new();
+
+            for (key, value) in headers {
+                let header_name =
+                    HeaderName::from_bytes(key.as_bytes()).expect("Invalid header name");
+                let header_value = HeaderValue::from_str(value).expect("Invalid header value");
+
+                header_map.insert(header_name, header_value);
+            }
+
+            builder = builder.default_headers(header_map);
+        }
+
+        let client = builder.build()?;
 
         // Clone the metrics for this task
         let metrics = service_metrics.clone();
@@ -107,6 +131,8 @@ async fn scan_service(
     metrics: &ServiceMetrics,
 ) -> Result<()> {
     let start_time = Instant::now();
+
+    debug!("client: {:?}", client);
 
     // Send a GET request to the service
     let response = client.get(&service_details.url).send().await?;

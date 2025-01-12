@@ -1,6 +1,6 @@
 [package]
 name = "epazote"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["Nicolas Embriz <nbari@tequila.io>"]
 description = "Automated HTTP (microservices) supervisor 🌿"
 documentation = "https://docs.rs/epazote/latest/epazote/"
@@ -14,7 +14,7 @@ license = "BSD-3-Clause"
 
 [dependencies]
 anyhow = "1"
-axum = "0.7.9"
+axum = "0.8.1"
 clap = "4.5"
 futures = "0.3.31"
 ignore = "0.4"

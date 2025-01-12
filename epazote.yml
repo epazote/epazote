@@ -1,8 +1,10 @@
 ---
 services:
   myip:
-    url: https://www.myip.country
-    every: 1s
+    url: http://www.ssh-vault.com
+    every: 10s
+    headers:
+      User-Agent: sopas
     expect:
       status: 200
       ssl:

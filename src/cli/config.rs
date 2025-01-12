@@ -35,8 +35,8 @@ pub struct ServiceDetails {
     #[serde(deserialize_with = "parse_duration")]
     pub every: Duration, // Store as `Duration` for easier usage
     pub expect: Expect,
-    pub follow: Option<bool>,
-    pub header: Option<HashMap<String, String>>,
+    pub follow_redirects: Option<bool>,
+    pub headers: Option<HashMap<String, String>>,
     #[serde(rename = "if_header")]
     pub if_header: Option<HashMap<String, Action>>,
     #[serde(rename = "if_status")]
