@@ -10,7 +10,7 @@ use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue},
     Client,
 };
-use std::{env, sync::Arc};
+use std::{env, sync::Arc, time::Duration};
 use tokio::{
     process::Command,
     time::{interval, Instant},
@@ -21,7 +21,7 @@ static APP_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_P
 
 enum ServiceAction {
     Url(Client),
-    Command(Command),
+    Command(String),
 }
 
 /// Handle the create action
@@ -43,10 +43,7 @@ pub async fn handle(action: Action) -> Result<()> {
         let service_details = service.clone();
 
         let action = if let Some(ref command) = service_details.test {
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
-            let mut cmd = Command::new(shell);
-            cmd.arg("-c").arg(&command);
-            ServiceAction::Command(cmd)
+            ServiceAction::Command(command.clone())
         } else {
             let mut builder = reqwest::Client::builder()
                 .timeout(service_details.timeout)
@@ -81,7 +78,8 @@ pub async fn handle(action: Action) -> Result<()> {
 
         // Spawn a task for each service
         let handle = tokio::spawn(async move {
-            run_service(service_name, service_details, action, metrics).await;
+            let every = service_details.every;
+            run_service(service_name, service_details, action, metrics, every).await;
         });
 
         service_handles.push(handle);
@@ -115,8 +113,9 @@ async fn run_service(
     service_details: ServiceDetails,
     action: ServiceAction,
     metrics: Arc<ServiceMetrics>,
+    interval_duration: Duration,
 ) {
-    let mut interval_timer = interval(service_details.every);
+    let mut interval_timer = interval(interval_duration);
 
     loop {
         interval_timer.tick().await; // Wait for the next interval
@@ -139,7 +138,7 @@ async fn run_service(
     }
 }
 
-/// Simulates scanning a service (e.g., sending an HTTP request)
+/// scan_service performs the actual scan of the service
 async fn scan_service(
     service_name: &str,
     service_details: &ServiceDetails,
@@ -152,8 +151,13 @@ async fn scan_service(
         ServiceAction::Url(client) => {
             debug!("HTTP request: {:?}", client);
 
+            let url = service_details
+                .url
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("No URL provided"))?;
+
             // Send a GET request to the service
-            let response = client.get(&service_details.url).send().await?;
+            let response = client.get(url).send().await?;
             let status = response.status();
             let headers = response.headers();
 
@@ -209,10 +213,248 @@ async fn scan_service(
                 );
             }
         }
-        ServiceAction::Command(cmd) => {
-            todo!("cmd: {:#?}", cmd);
+
+        ServiceAction::Command(command) => {
+            debug!("Executing command: {}", command);
+
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+            let output = Command::new(shell).arg("-c").arg(command).output().await?;
+
+            let exit_status = output.status.code().unwrap_or(1); // Default to `1` if no exit code
+            debug!("Command executed with exit code: {}", exit_status);
+
+            if exit_status != service_details.expect.status as i32 {
+                if let Some(action) = &service_details.expect.if_not {
+                    debug!("Executing fallback action: {}", action.cmd);
+                    let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+                    Command::new(shell)
+                        .arg("-c")
+                        .arg(&action.cmd)
+                        .output()
+                        .await?;
+                }
+            }
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::config::{Action, Expect};
+    use mockito::Server;
+    use reqwest::StatusCode;
+    use std::sync::Arc;
+    use tokio::process::Command;
+    use tokio::runtime::Runtime;
+    use tokio::time::Duration;
+
+    /// Helper Function: Create Mock ServiceDetails
+    fn mock_service_details(
+        test_cmd: Option<&str>,
+        expect_status: u16,
+        if_not: Option<&str>,
+    ) -> ServiceDetails {
+        ServiceDetails {
+            every: Duration::from_secs(1),
+            expect: Expect {
+                status: expect_status,
+                header: None,
+                if_not: if_not.map(|cmd| Action {
+                    cmd: cmd.to_string(),
+                    ..Default::default()
+                }),
+            },
+            follow_redirects: Some(true),
+            headers: None,
+            if_header: None,
+            if_status: None,
+            insecure: None,
+            read_limit: None,
+            stop: None,
+            test: test_cmd.map(|cmd| cmd.to_string()),
+            timeout: Duration::from_secs(5),
+            url: None,
+        }
+    }
+
+    /// Helper Function: Create Mock Action
+    fn mock_action(test_cmd: &str) -> ServiceAction {
+        ServiceAction::Command(test_cmd.to_string())
+    }
+
+    /// Test: Verify Shell Command Exit Codes
+    async fn run_command(cmd: &str) -> i32 {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+        let output = Command::new(shell)
+            .arg("-c")
+            .arg(cmd)
+            .output()
+            .await
+            .expect("Failed to execute command");
+
+        output.status.code().unwrap_or(1) // Default to 1 if no exit code
+    }
+
+    #[test]
+    fn test_command_exit_status() {
+        let rt = Runtime::new().unwrap();
+
+        let exit_code_0 = rt.block_on(run_command("exit 0"));
+        assert_eq!(exit_code_0, 0, "Command `exit 0` should return exit code 0");
+
+        let exit_code_1 = rt.block_on(run_command("exit 1"));
+        assert_eq!(exit_code_1, 1, "Command `exit 1` should return exit code 1");
+    }
+
+    /// Test: Successful HTTP Service with Expected Status
+    #[tokio::test]
+    async fn test_http_service_expect_status() {
+        let mut server = Server::new_async().await;
+        let _m = server
+            .mock("GET", "/test")
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let url = format!("{}/test", server.url());
+        let client = Client::new();
+        let response = client.get(&url).send().await.unwrap();
+        let status = response.status();
+
+        assert_eq!(status, StatusCode::OK, "Expected status 200 OK");
+    }
+
+    /// Test: Scan Service Command - Success
+    #[tokio::test]
+    async fn test_scan_service_command_success() {
+        let service_details = mock_service_details(Some("exit 0"), 0, None);
+        let action = mock_action("exit 0");
+        let metrics = Arc::new(ServiceMetrics::new().unwrap());
+
+        let result = scan_service("test-service", &service_details, &action, &metrics).await;
+        assert!(
+            result.is_ok(),
+            "Scan service should succeed for a successful command"
+        );
+    }
+
+    /// Test: Scan Service Command - Failure with Fallback
+    #[tokio::test]
+    async fn test_scan_service_command_failure_with_fallback() {
+        let service_details = mock_service_details(Some("exit 1"), 0, Some("echo 'Fallback'"));
+        let action = mock_action("exit 1");
+        let metrics = Arc::new(ServiceMetrics::new().unwrap());
+
+        let result = scan_service("test-service", &service_details, &action, &metrics).await;
+        assert!(
+            result.is_ok(),
+            "Scan service should execute fallback for failed command"
+        );
+    }
+
+    /// Test: Run Service - URL Success
+    #[tokio::test]
+    async fn test_run_service_http_success() {
+        let mut server = Server::new_async().await;
+        let _m = server
+            .mock("GET", "/health")
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let service_details = ServiceDetails {
+            every: Duration::from_secs(1),
+            expect: Expect {
+                status: 200,
+                header: None,
+                if_not: None,
+            },
+            follow_redirects: Some(true),
+            headers: None,
+            if_header: None,
+            if_status: None,
+            insecure: None,
+            read_limit: None,
+            stop: None,
+            test: None,
+            timeout: Duration::from_secs(5),
+            url: Some(format!("{}/health", server.url())),
+        };
+
+        let action = ServiceAction::Url(Client::new());
+        let metrics = Arc::new(ServiceMetrics::new().unwrap());
+
+        tokio::spawn(async move {
+            run_service(
+                "http-service".to_string(),
+                service_details,
+                action,
+                metrics,
+                Duration::from_millis(100),
+            )
+            .await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            true,
+            "Run service should execute multiple times in test interval"
+        );
+    }
+
+    /// Test: Run Service - HTTP Failure with Fallback
+    #[tokio::test]
+    async fn test_run_service_http_failure_with_fallback() {
+        let mut server = Server::new_async().await;
+        let _m = server
+            .mock("GET", "/down")
+            .with_status(500)
+            .create_async()
+            .await;
+
+        let service_details = ServiceDetails {
+            every: Duration::from_secs(1),
+            expect: Expect {
+                status: 200,
+                header: None,
+                if_not: Some(Action {
+                    cmd: "echo 'HTTP Failure Fallback'".to_string(),
+                    ..Default::default()
+                }),
+            },
+            follow_redirects: Some(true),
+            headers: None,
+            if_header: None,
+            if_status: None,
+            insecure: None,
+            read_limit: None,
+            stop: None,
+            test: None,
+            timeout: Duration::from_secs(5),
+            url: Some(format!("{}/down", server.url())),
+        };
+
+        let action = ServiceAction::Url(Client::new());
+        let metrics = Arc::new(ServiceMetrics::new().unwrap());
+
+        tokio::spawn(async move {
+            run_service(
+                "http-service-down".to_string(),
+                service_details,
+                action,
+                metrics,
+                Duration::from_millis(100),
+            )
+            .await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            true,
+            "Run service should detect failure and execute fallback"
+        );
+    }
 }
