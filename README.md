@@ -4,16 +4,6 @@
 # Epazote 🌿
 Automated HTTP (microservices) supervisor
 
-**Epazote** automatically update/add services specified in a file call
-``epazote.yml``. Periodically checks the defined endpoints and execute recovery
-commands in case services responses are not behaving like expected helping with
-this to automate actions in order to keep services/applications up and running.
-
-In Continuous Integration/Deployment environments the file ``epazote.yml`` can
-dynamically be updated/change without need to restart the supervisor, avoiding
-with this an extra dependency on the deployment flow which could imply to
-restart the supervisor, in this case **Epazote**.
-
 ## How it works
 In its basic way of operation, **Epazote** periodically checks the services endpoints
 "[URLs](https://en.wikipedia.org/wiki/Uniform_Resource_Locator)"
@@ -28,18 +18,12 @@ cause, like a signal (``kill -HUP``), or either a restart (``sv restart app``),
 therefore in this case **Epazote** and the application should be running on the
 same server.
 
-**Epazote** can also work in a standalone mode by only monitoring and sending
-alerts if desired.
 
 # How to use it
-First you need to install **Epazote**, either you can compile it from
-[source](https://github.com/nbari/epazote)
-or download a pre-compiled binary matching your operating system from here:
-https://dl.bintray.com/nbari/epazote/
+First you need to install **Epazote**:
 
- [![Download](https://api.bintray.com/packages/nbari/epazote/epazote/images/download.svg)](https://bintray.com/nbari/epazote/epazote/_latestVersion)
+    cargo install epazote
 
-> To compile from source, after downloading the sources use ``make`` to build the binary
 
 **Epazote** was designed with simplicity in mind, as an easy tool for
 [DevOps](https://en.wikipedia.org/wiki/DevOps) and as a complement to
@@ -52,85 +36,45 @@ language or syntax and simplifying the setup.
 
 ```yaml
 services:
-    google:
-        url: https://www.google.com
-        seconds: 5
+    myip:
+        url: https://www.myip.country
+        every: 5m
         expect:
-            status: 302
+            status: 200
             ssl:
                 hours: 72
             if_not:
-                cmd: echo -n "google down"
+                cmd: echo -n "myip.country down"
 ```
 
-To supervise ``google`` you would run (basic.yml is a file containing the above code):
+To supervise ``myip.country`` you would run (basic.yml is a file containing the above code):
 
-    $ epazote -f /path/to/yaml/file/basic.yml -d
+    $ epazote -c /path/to/yaml/file/basic.yml -v | jq
 
-> -d is for debugging, will print all output to standard output.
+> -v is for debugging, will print all output to standard output.
 
-This basic setup will supervise every 5 seconds the service with name
-``google``, it will do an HTTP GET to ``http://www.google.com`` and will expect
-an ``302 Status code`` if not,  it will ``echo -n "google down"``
+This basic setup will supervise every 5 minutes the service with name
+``myip``, it will do an HTTP GET to ``https://www.myip.country`` and will expect
+an ``200 Status code`` if not,  it will ``echo -n "myip.country down"``
 
 The ``ssl: hours: 72`` means to send an alert if the certificate is about to
 expire in the next 72 hours.
 
-Extending the basic example for receiving notifications:
-
-```yaml
-config:
-    smtp:
-        username: smtp@domain.tld
-        password: password
-        server: mail.example.com
-        port: 587
-        headers:
-            from: you@domain.tld
-            to: team@domain.tld
-            subject: "[name - exit- status]"
-
-services:
-    google:
-        url: http://www.google.com
-        minutes: 3
-        expect:
-            status: 200
-            if_not:
-                cmd: echo -n "google down"
-                notify: yes
-```
-
-In this case, every 3 minutes the service will be checked and in case of not
-receiving a ``200 Status code``, besides executing the command: ``echo -n
-"google down"`` an email is going to be send to ``team@domain.tld``, this
-because of the ``notify: yes`` setting.
-
 ## The configuration file
 
-The configuration file ([YAML formated](https://en.wikipedia.org/wiki/YAML))
+The configuration file ([YAML formatted](https://en.wikipedia.org/wiki/YAML))
 consists of two parts, a **config** and a **services** (Key-value pairs).
 
 ## The config section
 
 The **config** section is composed of:
 
-    - smtp (Email settings for sending notification)
     - scan (Paths used to find the file 'epazote.yml')
 
 Example:
 
 ```yaml
 config:
-    smtp:
-        username: smtp@domain.tld
-        password: password
-        server: mail.example.com
-        port: 587
-        headers:
-            from: epazote@domain.tld
-            to: team@domain.tld ops@domain.tld etc@domain.tld
-            subject: "[_name_, _because_]"
     scan:
         paths:
             - /arena/home/sites
