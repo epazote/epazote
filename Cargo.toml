@@ -33,3 +33,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [dev-dependencies]
 mockito = "1.6.1"
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/epazote", dest = "/usr/bin/epazote", mode = "0755" },
+]
