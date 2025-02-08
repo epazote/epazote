@@ -1,7 +1,5 @@
-[![Download](https://api.bintray.com/packages/nbari/epazote/epazote/images/download.svg)](https://bintray.com/nbari/epazote/epazote/_latestVersion)
-[![Build Status](https://travis-ci.org/epazote/epazote.svg?branch=master)](https://travis-ci.org/epazote/epazote)
-[![Coverage Status](https://coveralls.io/repos/github/epazote/epazote/badge.svg?branch=develop)](https://coveralls.io/github/epazote/epazote?branch=develop)
-[![Go Report Card](https://goreportcard.com/badge/github.com/epazote/epazote)](https://goreportcard.com/report/github.com/epazote/epazote)
+[![Test & Build](https://github.com/epazote/epazote/actions/workflows/build.yml/badge.svg)](https://github.com/epazote/epazote/actions/workflows/build.yml)
+[![codecov](https://codecov.io/gh/epazote/epazote/graph/badge.svg?token=ztiGQV2sTm)](https://codecov.io/gh/epazote/epazote)
 
 # Epazote 🌿
 Automated HTTP (microservices) supervisor
