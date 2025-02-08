@@ -4,7 +4,6 @@ use std::{collections::HashMap, fs::File, path::PathBuf, time::Duration};
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
-    pub config: Option<SmtpConfig>,
     pub services: HashMap<String, ServiceDetails>,
 }
 
@@ -27,27 +26,6 @@ impl Config {
     pub fn get_service(&self, service_name: &str) -> Option<&ServiceDetails> {
         self.services.get(service_name)
     }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SmtpConfig {
-    pub smtp: SmtpDetails,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SmtpDetails {
-    pub username: String,
-    pub password: String,
-    pub server: String,
-    pub port: u16,
-    pub headers: SmtpHeaders,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SmtpHeaders {
-    pub from: String,
-    pub to: String,
-    pub subject: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -92,18 +70,6 @@ pub struct Expect {
 #[derive(Default, Debug, Deserialize, Clone)]
 pub struct Action {
     pub cmd: String,
-
-    #[serde(default)]
-    pub notify: Option<bool>,
-
-    #[serde(default)]
-    pub msg: Option<String>,
-
-    #[serde(default)]
-    pub emoji: Option<String>,
-
-    #[serde(default)]
-    pub http: Option<String>,
 }
 
 // Default timeout value
