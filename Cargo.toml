@@ -8,7 +8,7 @@ homepage = "https://epazote.io"
 repository = "https://github.com/epazote/epazote/"
 readme = "README.md"
 keywords = ["metrics", "supervisor", "monitoring"]
-categories = ["command-line-utilities", "monitoring"]
+categories = ["command-line-utilities", "command-line-interface"]
 edition = "2021"
 license = "BSD-3-Clause"
 
