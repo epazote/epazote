@@ -1,16 +1,17 @@
 use crate::cli::{
     actions::{
         metrics::{metrics_server, ServiceMetrics},
+        ssl::check_ssl_certificate,
         Action,
     },
     config::{Config, ServiceDetails},
 };
-use crate::utils::check_ssl_certificate;
 use anyhow::{anyhow, Result};
 use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue},
     Client,
 };
+use rustls::crypto::CryptoProvider;
 use std::{env, sync::Arc, time::Duration};
 use tokio::{
     process::Command,
@@ -28,6 +29,10 @@ enum ServiceAction {
 /// Handle the create action
 #[instrument(skip(action))]
 pub async fn handle(action: Action) -> Result<()> {
+    // rustls requires a cryptographic provider
+    CryptoProvider::install_default(rustls::crypto::ring::default_provider())
+        .map_err(|e| anyhow!("Failed to install default crypto provider: {:?}", e))?;
+
     let Action::Run { config, port } = action;
 
     let config_path = config;

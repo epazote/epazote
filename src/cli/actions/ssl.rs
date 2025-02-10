@@ -8,7 +8,7 @@ use std::{
 };
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
-use tracing::{debug, instrument};
+use tracing::debug;
 use url::Url;
 use x509_parser::parse_x509_certificate;
 
@@ -26,7 +26,6 @@ fn extract_host_port(url: &str) -> Result<(String, u16)> {
 }
 
 /// Retrieves the SSL certificate expiration time in seconds
-#[instrument]
 async fn get_cert_expiration_time(host: String, port: u16) -> Result<u64> {
     let mut roots = rustls::RootCertStore::empty();
 
@@ -70,9 +69,19 @@ async fn get_cert_expiration_time(host: String, port: u16) -> Result<u64> {
 
     // Calculate remaining seconds
     let not_after = parsed_cert.validity().not_after.timestamp() as u64;
+
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
 
-    Ok(not_after.saturating_sub(now))
+    let remaining = not_after.saturating_sub(now);
+
+    debug!(
+        "Certificate for: {},  expies in: {}s, not after: {}",
+        addr,
+        remaining,
+        parsed_cert.validity().not_after
+    );
+
+    Ok(remaining)
 }
 
 /// Checks the SSL certificate expiration for a given URL
@@ -90,10 +99,52 @@ pub async fn check_ssl_certificate(
         .with_label_values(&[service_name])
         .set(remaining.try_into()?);
 
-    debug!(
-        "SSL Certificate for {} expires in {} seconds",
-        url, remaining
-    );
-
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use ctor::ctor;
+    use rustls::crypto::CryptoProvider;
+
+    // Initialize crypto provider once before all tests
+    #[ctor]
+    fn init_crypto() {
+        CryptoProvider::install_default(rustls::crypto::ring::default_provider())
+            .expect("Failed to initialize crypto provider");
+    }
+
+    #[test]
+    fn test_extract_host_port() -> Result<()> {
+        let url = "https://example.com:443";
+        let (host, port) = extract_host_port(url)?;
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 443);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_cert_expiration_time() -> Result<()> {
+        let (host, port) = extract_host_port("https://www.google.com")?;
+        let remaining = get_cert_expiration_time(host, port).await?;
+        assert!(remaining > 0, "Certificate should have future expiration");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_expired_certificate() -> Result<()> {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/")
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let (host, port) = extract_host_port(&server.url())?;
+        let remaining = get_cert_expiration_time(host, port).await;
+        assert!(remaining.is_err());
+        Ok(())
+    }
 }

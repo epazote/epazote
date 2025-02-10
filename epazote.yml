@@ -1,20 +1,30 @@
 ---
 services:
   myip:
-    url: http://www.ssh-vault.com
-    every: 5m
+    url: https://www.myip.country
+    every: 30s
     headers:
       user-agent: sopas
     expect:
       status: 200
-      ssl:
-        hours: 72
       if_not:
         cmd: echo -n "myip.country down"
 
+  ssh-vault:
+    url: http://www.ssh-vault.com
+    every: 10s
+    expect:
+      status: 301
+
+  google:
+    url: https://google.com
+    every: 10s
+    expect:
+      status: 301
+
   my-command:
     test: false
-    every: 5s
+    every: 5m
     expect:
       status: 0
       if_not:

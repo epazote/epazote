@@ -1,5 +1,6 @@
 pub mod metrics;
 pub mod run;
+pub mod ssl;
 
 use std::path::PathBuf;
 
