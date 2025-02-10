@@ -15,24 +15,30 @@ license = "BSD-3-Clause"
 [dependencies]
 anyhow = "1"
 axum = "0.8.1"
+chrono = "0.4"
 clap = "4.5"
 futures = "0.3.31"
 ignore = "0.4"
-openssl = { version = "0.10", optional = true, features = ["vendored"] }
 opentelemetry = "0.27"
 opentelemetry-otlp = { version = "0.27", features = ["tls"] }
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
 prometheus = "0.13.4"
 reqwest = { version = "0.12", features = ["json"] }
+rustls = "0.23"
+rustls-native-certs = "0.8.1"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 tokio = { version = "1", features = ["full"] }
+tokio-rustls = "0.26"
 tracing = "0.1"
 tracing-opentelemetry = "0.28"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+url = "2"
+webpki = "0.22"
+x509-parser = "0.17"
 
 [dev-dependencies]
-mockito = "1.6.1"
+mockito = "1.6"
 
 [package.metadata.generate-rpm]
 assets = [

@@ -5,6 +5,7 @@ use crate::cli::{
     },
     config::{Config, ServiceDetails},
 };
+use crate::utils::check_ssl_certificate;
 use anyhow::{anyhow, Result};
 use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue},
@@ -161,6 +162,10 @@ async fn scan_service(
             let status = response.status();
             let headers = response.headers();
 
+            if url.starts_with("https://") {
+                check_ssl_certificate(url, service_name, metrics).await?;
+            }
+
             // Record response time
             let response_time = start_time.elapsed().as_secs_f64();
             metrics
@@ -262,6 +267,7 @@ mod tests {
             expect: Expect {
                 status: expect_status,
                 header: None,
+                body: None,
                 if_not: if_not.map(|cmd| Action {
                     cmd: cmd.to_string(),
                     ..Default::default()
@@ -370,6 +376,7 @@ mod tests {
             expect: Expect {
                 status: 200,
                 header: None,
+                body: None,
                 if_not: None,
             },
             follow_redirects: Some(true),
@@ -420,6 +427,7 @@ mod tests {
             expect: Expect {
                 status: 200,
                 header: None,
+                body: None,
                 if_not: Some(Action {
                     cmd: "echo 'HTTP Failure Fallback'".to_string(),
                     ..Default::default()

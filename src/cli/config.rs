@@ -32,22 +32,31 @@ impl Config {
 pub struct ServiceDetails {
     #[serde(deserialize_with = "parse_duration")]
     pub every: Duration,
+
     pub expect: Expect,
     pub follow_redirects: Option<bool>,
     pub headers: Option<HashMap<String, String>>,
+
     #[serde(rename = "if_header")]
     pub if_header: Option<HashMap<String, Action>>,
+
     #[serde(rename = "if_status")]
     pub if_status: Option<HashMap<String, Action>>,
+
     pub insecure: Option<bool>,
+
     #[serde(rename = "read_limit")]
     pub read_limit: Option<i64>,
+
     pub stop: Option<i8>,
     pub test: Option<String>,
+
     #[serde(deserialize_with = "parse_duration", default = "default_timeout")]
     pub timeout: Duration,
+
     pub url: Option<String>,
 }
+
 impl ServiceDetails {
     pub fn validate(&self) -> Result<()> {
         match (&self.url, &self.test) {
@@ -62,6 +71,7 @@ impl ServiceDetails {
 pub struct Expect {
     pub status: u16, // Use for both HTTP & text exit codes
     pub header: Option<HashMap<String, String>>,
+    pub body: Option<String>,
 
     #[serde(rename = "if_not")]
     pub if_not: Option<Action>,
@@ -77,7 +87,7 @@ const fn default_timeout() -> Duration {
     Duration::from_secs(5)
 }
 
-/// Parses a duration string (e.g., "5s", "3m", "1h", "2d") into a `Duration`.
+/// Parses a duration string (e.g., "5s", "3m", "1h", "2d") into a Duration.
 fn parse_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where
     D: serde::Deserializer<'de>,

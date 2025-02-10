@@ -11,6 +11,7 @@ pub struct ServiceMetrics {
     pub service_status: IntGaugeVec,           // Current state
     pub service_failures_total: IntCounterVec, // Cumulative failures
     pub service_response_time: HistogramVec,
+    pub service_ssl_cert_expiry_seconds: IntGaugeVec,
 }
 
 impl ServiceMetrics {
@@ -35,16 +36,26 @@ impl ServiceMetrics {
             &["service_name"],
         )?;
 
+        let service_ssl_cert_expiry_seconds = IntGaugeVec::new(
+            opts!(
+                "service_ssl_cert_expiry_seconds",
+                "Number of seconds until SSL certificate expiration"
+            ),
+            &["service_name"],
+        )?;
+
         // Register metrics with the registry
         registry.register(Box::new(service_status.clone()))?;
         registry.register(Box::new(service_failures_total.clone()))?;
         registry.register(Box::new(service_response_time.clone()))?;
+        registry.register(Box::new(service_ssl_cert_expiry_seconds.clone()))?;
 
         Ok(Self {
             registry,
             service_status,
             service_failures_total,
             service_response_time,
+            service_ssl_cert_expiry_seconds,
         })
     }
 }
