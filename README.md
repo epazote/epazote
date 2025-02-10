@@ -24,6 +24,8 @@ First you need to install **Epazote**:
 
     cargo install epazote
 
+Or download the latest release from the [releases](https://github.com/epazote/epazote/releases)
+
 
 **Epazote** was designed with simplicity in mind, as an easy tool for
 [DevOps](https://en.wikipedia.org/wiki/DevOps) and as a complement to
@@ -82,18 +84,6 @@ config:
         minutes: 5
 ```
 
-### config - smtp
-
-Required to properly send alerts via email, all fields are required, the
-``headers`` section can be extended with any desired key-pair values.
-
-### config - smtp - subject
-The subject can be formed by using this keywords: ``_because_`` ``_exit_``
-``_name_`` ``_output_`` ``_status_`` ``_url_`` on the previous example,
-``subject: [_name_, _status_]`` would transform to ``[my service - 500]``
-the ``name`` has replaced by the service name, ``my service`` and
-``status`` by the response status code ``500`` in this case.
-
 ### config - scan
 
 Paths to scan every N ``seconds``, ``minutes`` or ``hours``, a search for
@@ -105,17 +95,6 @@ directory ``/arena/home/sites/application_1`` and your scan paths contain
 ``/arena/home/sites``, you could simple upload on your application directory a
 file named ``epazote.yml`` with the service rules, thus achieving the deployment
 of your application and the supervising at the same time.
-
-### config (optional)
-
-As you may notice the ``config`` section contains mainly settings for sending
-alerts/notifications apart from the ``scan`` setting, therefore is totally
-optional, meaning that **Epazote** can still run and check your services without
-the need of the ``config`` section.
-
-If you want to automatically update/load services you will need the
-``config - scan`` setting.
-
 
 ## The services section
 
@@ -137,27 +116,18 @@ services:
             body: find this string on my site
             if_not:
                 cmd: sv restart /services/my_service_1
-                notify: team@domain.tld
-                msg: |
-                    line 1 bla bla
-                    line 2
         if_status:
             500:
                 cmd: reboot
             404:
                 cmd: sv restart /services/cache
-                msg: restarting cache
-                notify: team@domain.tld x@domain.tld
         if_header:
             x-amqp-kapputt:
                 cmd: restart abc
-                notify: bunny@domain.tld
-                msg: |
-                    The rabbit is angry
-                    & hungry
             x-db-kapputt:
                 cmd: svc restart /services/db
 
+    # do nothing
     other service:
         url: https://self-signed.ssl.tld/ping
         header:
@@ -174,14 +144,14 @@ services:
             status: 302
             if_not:
                 cmd: service restart abc
-                notify: yes
-                emoji: 1F600-1F621
 
     salt-master:
         test: pgrep -f salt
-        if_not:
-            cmd: service restart salt_master
-            notify: operations@domain.tld
+        every: 5m
+        expect:
+            status: 0
+            if_not:
+                cmd: service restart salt_master
 ```
 
 ### services - name of service (string)
