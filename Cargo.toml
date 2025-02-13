@@ -20,9 +20,9 @@ clap = "4.5"
 futures = "0.3.31"
 ignore = "0.4"
 openssl = { version = "0.10", optional = true, features = ["vendored"] }
-opentelemetry = "0.27"
-opentelemetry-otlp = { version = "0.27", features = ["tls"] }
-opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry = "0.28"
+opentelemetry-otlp = { version = "0.28", features = ["grpc-tonic", "tls"] }
+opentelemetry_sdk = { version = "0.28", features = ["rt-tokio"] }
 prometheus = "0.13.4"
 reqwest = { version = "0.12", features = ["json"] }
 rustls = "0.23"
@@ -32,14 +32,14 @@ serde_yaml = "0.9"
 tokio = { version = "1", features = ["full"] }
 tokio-rustls = "0.26"
 tracing = "0.1"
-tracing-opentelemetry = "0.28"
+tracing-opentelemetry = "0.29"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 url = "2"
 webpki = "0.22"
 x509-parser = "0.17"
 
 [dev-dependencies]
-ctor = "0.2"
+ctor = "0.3"
 mockito = "1.6"
 
 [package.metadata.generate-rpm]
