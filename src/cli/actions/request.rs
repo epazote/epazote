@@ -117,3 +117,59 @@ async fn execute_fallback_command(cmd: &str) -> Result<i32> {
 
     Ok(exit_code)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::config::{Expect, HttpMethod, ServiceDetails};
+    use reqwest::StatusCode;
+    use tokio::time::Duration;
+
+    #[tokio::test]
+    async fn test_execute_fallback_command() {
+        let exit_code = execute_fallback_command("exit 0").await.unwrap();
+        assert_eq!(exit_code, 0);
+
+        let exit_code = execute_fallback_command("exit 1").await.unwrap();
+        assert_eq!(exit_code, 1);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response() {
+        let service_name = "test_service";
+        let service_details = ServiceDetails {
+            url: Some("http://localhost:8080".to_string()),
+            method: HttpMethod::Get,
+            body: None,
+            headers: None,
+            every: Duration::from_secs(1),
+            expect: Expect {
+                status: 200,
+                header: None,
+                body: None,
+                if_not: None,
+            },
+            follow_redirects: Some(true),
+            if_header: None,
+            if_status: None,
+            insecure: None,
+            read_limit: None,
+            stop: None,
+            test: None,
+            timeout: Duration::from_secs(5),
+        };
+        let metrics = ServiceMetrics::new().unwrap();
+
+        let headers = HeaderMap::new();
+        let status = StatusCode::OK;
+
+        handle_http_response(service_name, &service_details, status, &headers, &metrics)
+            .await
+            .unwrap();
+
+        let status = StatusCode::BAD_REQUEST;
+        handle_http_response(service_name, &service_details, status, &headers, &metrics)
+            .await
+            .unwrap();
+    }
+}
