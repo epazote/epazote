@@ -4,12 +4,12 @@ use crate::cli::{
         ssl::check_ssl_certificate,
         Action,
     },
-    config::{Config, ServiceDetails},
+    config::{BodyType, Config, ServiceDetails},
 };
 use anyhow::{anyhow, Result};
 use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue},
-    Client,
+    Client, Method,
 };
 use rustls::crypto::CryptoProvider;
 use std::{env, sync::Arc, time::Duration};
@@ -162,8 +162,51 @@ async fn scan_service(
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("No URL provided"))?;
 
-            // Send a GET request to the service
-            let response = client.get(url).send().await?;
+            let method = Method::from_bytes(service_details.method.to_string().as_bytes())?;
+
+            let mut request = client.request(method, url);
+
+            if let Some(body) = &service_details.body {
+                let mut content_type_set = false;
+
+                // Check if Content-Type is already set in headers
+                if let Some(headers) = &service_details.headers {
+                    if headers.contains_key("Content-Type") || headers.contains_key("content-type")
+                    {
+                        content_type_set = true;
+                    }
+                }
+                match body {
+                    BodyType::Json(json) => {
+                        request = request.json(json);
+                        if !content_type_set {
+                            request =
+                                request.header(reqwest::header::CONTENT_TYPE, "application/json");
+                        }
+                    }
+                    BodyType::Form(form_data) => {
+                        request = request.form(form_data);
+                        if !content_type_set {
+                            request = request.header(
+                                reqwest::header::CONTENT_TYPE,
+                                "application/x-www-form-urlencoded",
+                            );
+                        }
+                    }
+                    BodyType::Text(text) => {
+                        request = request.body(text.clone()); // Handles XML, plain text, etc.
+                        if !content_type_set {
+                            request = request.header(
+                                reqwest::header::CONTENT_TYPE,
+                                "application/x-www-form-urlencoded",
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Make the request
+            let response = request.send().await?;
             let status = response.status();
             let headers = response.headers();
 
@@ -253,7 +296,7 @@ async fn scan_service(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::config::{Action, Expect};
+    use crate::cli::config::{Action, Expect, HttpMethod};
     use mockito::Server;
     use reqwest::StatusCode;
     use std::sync::Arc;
@@ -288,6 +331,8 @@ mod tests {
             test: test_cmd.map(|cmd| cmd.to_string()),
             timeout: Duration::from_secs(5),
             url: None,
+            method: HttpMethod::Get,
+            body: None,
         }
     }
 
@@ -394,6 +439,8 @@ mod tests {
             test: None,
             timeout: Duration::from_secs(5),
             url: Some(format!("{}/health", server.url())),
+            method: HttpMethod::Get,
+            body: None,
         };
 
         let action = ServiceAction::Url(Client::new());
@@ -448,6 +495,8 @@ mod tests {
             test: None,
             timeout: Duration::from_secs(5),
             url: Some(format!("{}/down", server.url())),
+            method: HttpMethod::Get,
+            body: None,
         };
 
         let action = ServiceAction::Url(Client::new());

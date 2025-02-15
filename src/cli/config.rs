@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fs::File, path::PathBuf, time::Duration};
+use strum::{Display, EnumString};
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -26,6 +27,31 @@ impl Config {
     pub fn get_service(&self, service_name: &str) -> Option<&ServiceDetails> {
         self.services.get(service_name)
     }
+}
+
+#[derive(Default, Debug, Clone, Copy, EnumString, Display, Serialize, Deserialize)]
+#[strum(serialize_all = "UPPERCASE")] // Ensures correct casing for HTTP methods
+pub enum HttpMethod {
+    Connect,
+    Delete,
+
+    #[default]
+    Get,
+
+    Head,
+    Options,
+    Patch,
+    Post,
+    Put,
+    Trace,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum BodyType {
+    Json(serde_json::Value),       // Covers structured JSON data
+    Form(HashMap<String, String>), // Covers form-encoded data
+    Text(String),                  // Covers plain text, XML, and other string-based data
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -55,6 +81,11 @@ pub struct ServiceDetails {
     pub timeout: Duration,
 
     pub url: Option<String>,
+
+    pub method: HttpMethod,
+
+    #[serde(default)]
+    pub body: Option<BodyType>,
 }
 
 impl ServiceDetails {
