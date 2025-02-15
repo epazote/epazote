@@ -1,6 +1,9 @@
 Changelog
 =========
 
+## 0.5.0
+- Complete rewrite of the project in Rust 🦀
+
 ## 2.1.1
 - fixed report.go to send alert if site is healthy
 
