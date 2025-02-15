@@ -1,3 +1,4 @@
+pub mod client;
 pub mod metrics;
 pub mod request;
 pub mod run;

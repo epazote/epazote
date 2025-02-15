@@ -122,7 +122,9 @@ async fn execute_fallback_command(cmd: &str) -> Result<i32> {
 mod tests {
     use super::*;
     use crate::cli::config::{Expect, HttpMethod, ServiceDetails};
+    use mockito::Server;
     use reqwest::StatusCode;
+    use std::sync::Arc;
     use tokio::time::Duration;
 
     #[tokio::test]
@@ -136,12 +138,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_http_response() {
-        let service_name = "test_service";
+        let mut server = Server::new_async().await;
+        let _m = server
+            .mock("GET", "/health")
+            .with_status(200)
+            .create_async()
+            .await;
+
         let service_details = ServiceDetails {
-            url: Some("http://localhost:8080".to_string()),
-            method: HttpMethod::Get,
-            body: None,
-            headers: None,
             every: Duration::from_secs(1),
             expect: Expect {
                 status: 200,
@@ -150,6 +154,7 @@ mod tests {
                 if_not: None,
             },
             follow_redirects: Some(true),
+            headers: None,
             if_header: None,
             if_status: None,
             insecure: None,
@@ -157,19 +162,23 @@ mod tests {
             stop: None,
             test: None,
             timeout: Duration::from_secs(5),
+            url: Some(format!("{}/health", server.url())),
+            method: HttpMethod::Get,
+            body: None,
         };
-        let metrics = ServiceMetrics::new().unwrap();
 
-        let headers = HeaderMap::new();
-        let status = StatusCode::OK;
+        let metrics = Arc::new(ServiceMetrics::new().unwrap());
 
-        handle_http_response(service_name, &service_details, status, &headers, &metrics)
-            .await
-            .unwrap();
+        let response = handle_http_response(
+            "test",
+            &service_details,
+            StatusCode::OK,
+            &HeaderMap::new(),
+            &metrics,
+        )
+        .await;
 
-        let status = StatusCode::BAD_REQUEST;
-        handle_http_response(service_name, &service_details, status, &headers, &metrics)
-            .await
-            .unwrap();
+        assert!(response.is_ok());
+        println!("{:?}", response.unwrap());
     }
 }

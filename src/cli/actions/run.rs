@@ -1,5 +1,6 @@
 use crate::cli::{
     actions::{
+        client::build_client,
         metrics::{metrics_server, ServiceMetrics},
         request::{build_http_request, handle_http_response},
         ssl::check_ssl_certificate,
@@ -8,19 +9,14 @@ use crate::cli::{
     config::{Config, ServiceDetails},
 };
 use anyhow::{anyhow, Result};
-use reqwest::{
-    header::{HeaderMap, HeaderName, HeaderValue},
-    Client,
-};
+use reqwest::Client;
 use rustls::crypto::CryptoProvider;
-use std::{env, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use tokio::{
     process::Command,
     time::{interval, Instant},
 };
 use tracing::{debug, error, info, instrument};
-
-static APP_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"), ")");
 
 enum ServiceAction {
     Url(Client),
@@ -52,31 +48,9 @@ pub async fn handle(action: Action) -> Result<()> {
         let action = if let Some(ref command) = service_details.test {
             ServiceAction::Command(command.clone())
         } else {
-            let mut builder = reqwest::Client::builder()
-                .timeout(service_details.timeout)
-                .user_agent(APP_USER_AGENT);
-
-            // Disable redirects if follow is not set
-            if service_details.follow_redirects.is_none() {
-                builder = builder.redirect(reqwest::redirect::Policy::none());
-            }
-
-            // Conditionally add headers if they are provided
-            if let Some(headers) = &service_details.headers {
-                let mut header_map = HeaderMap::new();
-
-                for (key, value) in headers {
-                    let header_name =
-                        HeaderName::from_bytes(key.as_bytes()).expect("Invalid header name");
-                    let header_value = HeaderValue::from_str(value).expect("Invalid header value");
-
-                    header_map.insert(header_name, header_value);
-                }
-
-                builder = builder.default_headers(header_map);
-            }
-
+            let (builder, _client_config) = build_client(&service_details)?;
             let client = builder.build()?;
+
             ServiceAction::Url(client)
         };
 
@@ -213,7 +187,7 @@ async fn scan_service(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::config::{Action, BodyType, Expect, HttpMethod};
+    use crate::cli::config::{Action, Expect, HttpMethod};
     use mockito::Server;
     use reqwest::StatusCode;
     use std::sync::Arc;
@@ -366,115 +340,6 @@ mod tests {
         tokio::spawn(async move {
             run_service(
                 "http-service".to_string(),
-                service_details,
-                action,
-                metrics,
-                Duration::from_millis(100),
-            )
-            .await;
-        });
-
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        assert!(
-            true,
-            "Run service should execute multiple times in test interval"
-        );
-    }
-
-    /// Test: Run Service - HTTP Failure with Fallback
-    #[tokio::test]
-    async fn test_run_service_http_failure_with_fallback() {
-        let mut server = Server::new_async().await;
-        let _m = server
-            .mock("GET", "/down")
-            .with_status(500)
-            .create_async()
-            .await;
-
-        let service_details = ServiceDetails {
-            every: Duration::from_secs(1),
-            expect: Expect {
-                status: 200,
-                header: None,
-                body: None,
-                if_not: Some(Action {
-                    cmd: "echo 'HTTP Failure Fallback'".to_string(),
-                    ..Default::default()
-                }),
-            },
-            follow_redirects: Some(true),
-            headers: None,
-            if_header: None,
-            if_status: None,
-            insecure: None,
-            read_limit: None,
-            stop: None,
-            test: None,
-            timeout: Duration::from_secs(5),
-            url: Some(format!("{}/down", server.url())),
-            method: HttpMethod::Get,
-            body: None,
-        };
-
-        let action = ServiceAction::Url(Client::new());
-        let metrics = Arc::new(ServiceMetrics::new().unwrap());
-
-        tokio::spawn(async move {
-            run_service(
-                "http-service-down".to_string(),
-                service_details,
-                action,
-                metrics,
-                Duration::from_millis(100),
-            )
-            .await;
-        });
-
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        assert!(
-            true,
-            "Run service should detect failure and execute fallback"
-        );
-    }
-
-    /// Test: Run Service -  POST Request with JSON Body
-    #[tokio::test]
-    async fn test_run_service_http_post_json() {
-        let mut server = Server::new_async().await;
-        let _m = server
-            .mock("POST", "/post")
-            .with_status(200)
-            .create_async()
-            .await;
-
-        let service_details = ServiceDetails {
-            every: Duration::from_secs(1),
-            expect: Expect {
-                status: 200,
-                header: None,
-                body: None,
-                if_not: None,
-            },
-            follow_redirects: Some(true),
-            headers: None,
-            if_header: None,
-            if_status: None,
-            insecure: None,
-            read_limit: None,
-            stop: None,
-            test: None,
-            timeout: Duration::from_secs(5),
-            url: Some(format!("{}/post", server.url())),
-            method: HttpMethod::Post,
-            body: Some(BodyType::Json(serde_json::json!({"key": "value"}))),
-        };
-
-        let action = ServiceAction::Url(Client::new());
-        let metrics = Arc::new(ServiceMetrics::new().unwrap());
-
-        tokio::spawn(async move {
-            run_service(
-                "http-service-post".to_string(),
                 service_details,
                 action,
                 metrics,

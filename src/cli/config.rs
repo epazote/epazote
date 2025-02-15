@@ -46,6 +46,10 @@ pub enum HttpMethod {
     Trace,
 }
 
+const fn default_http_method() -> HttpMethod {
+    HttpMethod::Get
+}
+
 #[derive(Debug, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum BodyType {
@@ -82,6 +86,7 @@ pub struct ServiceDetails {
 
     pub url: Option<String>,
 
+    #[serde(default = "default_http_method")]
     pub method: HttpMethod,
 
     #[serde(default)]
