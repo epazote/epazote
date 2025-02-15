@@ -1,5 +1,5 @@
 [![Test & Build](https://github.com/epazote/epazote/actions/workflows/build.yml/badge.svg)](https://github.com/epazote/epazote/actions/workflows/build.yml)
-[![codecov](https://codecov.io/gh/epazote/epazote/graph/badge.svg?token=ztiGQV2sTm)](https://codecov.io/gh/epazote/epazote)
+[![codecov](https://codecov.io/gh/epazote/epazote/branch/main/graph/badge.svg?token=ztiGQV2sTm)](https://codecov.io/gh/epazote/epazote)
 
 # Epazote 🌿
 Automated HTTP (microservices) supervisor
