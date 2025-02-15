@@ -62,7 +62,7 @@ const fn default_http_method() -> HttpMethod {
     HttpMethod::Get
 }
 
-#[derive(Debug, Serialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum BodyType {
     Json(serde_json::Value),       // Covers structured JSON data
@@ -76,11 +76,10 @@ impl<'de> Deserialize<'de> for BodyType {
         D: Deserializer<'de>,
     {
         let value = serde_json::Value::deserialize(deserializer)?;
-        if let Some(json_value) = value.get("json") {
-            Ok(BodyType::Json(json_value.clone()))
-        } else {
-            Ok(BodyType::Json(value))
-        }
+        value.clone().get("json").map_or_else(
+            || Ok(Self::Json(value)),
+            |json_value| Ok(Self::Json(json_value.clone())),
+        )
     }
 }
 
