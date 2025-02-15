@@ -90,18 +90,19 @@ services:
 
         let mut server = Server::new_async().await;
 
-        let expected_headers = vec![
+        let expected_services = vec![
             (
                 "test",
                 vec![
                     ("X-Custom-Header", "TestValue"),
                     ("User-Agent", APP_USER_AGENT),
                 ],
-            ),
-            ("test2", vec![("User-Agent", "TestAgent")]),
+                false,
+            ), // `false` for no redirects
+            ("test2", vec![("User-Agent", "TestAgent")], true), // `true` for redirects
         ];
 
-        for (service_name, headers) in &expected_headers {
+        for (service_name, headers, expected_redirect) in &expected_services {
             let mut mock = server
                 .mock("GET", format!("/{service_name}").as_str())
                 .with_status(200)
@@ -118,7 +119,20 @@ services:
             let config = create_config(yaml);
             let service = config.services.get(*service_name).unwrap();
 
-            let (builder, _client_config) = build_client(service).unwrap();
+            let (builder, client_config) = build_client(service).unwrap();
+
+            // Check timeout
+            assert_eq!(client_config.timeout, std::time::Duration::from_secs(5));
+
+            // Check user agent
+            assert_eq!(client_config.user_agent, APP_USER_AGENT);
+
+            // Check redirect policy
+            assert_eq!(
+                client_config.follow_redirects, *expected_redirect,
+                "Follow redirects mismatch for service {}",
+                service_name
+            );
 
             let client = builder.build().unwrap();
             let url = format!("{}/{}", server.url(), service_name);
