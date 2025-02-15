@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+use std::str::FromStr;
 use std::{collections::HashMap, fs::File, path::PathBuf, time::Duration};
 use strum::{Display, EnumString};
 
@@ -29,7 +30,7 @@ impl Config {
     }
 }
 
-#[derive(Default, Debug, Clone, Copy, EnumString, Display, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Copy, EnumString, Display, Serialize, PartialEq, Eq)]
 #[strum(serialize_all = "UPPERCASE")] // Ensures correct casing for HTTP methods
 pub enum HttpMethod {
     Connect,
@@ -46,16 +47,41 @@ pub enum HttpMethod {
     Trace,
 }
 
+// Custom deserialization for case-insensitive HTTP methods
+impl<'de> Deserialize<'de> for HttpMethod {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let method = String::deserialize(deserializer)?;
+        Self::from_str(&method.to_uppercase()).map_err(serde::de::Error::custom)
+    }
+}
+
 const fn default_http_method() -> HttpMethod {
     HttpMethod::Get
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Clone, PartialEq)]
 #[serde(untagged)]
 pub enum BodyType {
     Json(serde_json::Value),       // Covers structured JSON data
     Form(HashMap<String, String>), // Covers form-encoded data
     Text(String),                  // Covers plain text, XML, and other string-based data
+}
+
+impl<'de> Deserialize<'de> for BodyType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        if let Some(json_value) = value.get("json") {
+            Ok(BodyType::Json(json_value.clone()))
+        } else {
+            Ok(BodyType::Json(value))
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -145,5 +171,187 @@ fn parse_duration_str(input: &str) -> Result<Duration> {
         "h" => Ok(Duration::from_secs(value * 60 * 60)),
         "d" => Ok(Duration::from_secs(value * 60 * 60 * 24)),
         _ => Err(anyhow!("Invalid duration unit: {}", unit)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::io::Write;
+
+    // Helper to create config from YAML
+    fn create_config(yaml: &str) -> Result<tempfile::NamedTempFile> {
+        let mut tmp_file = tempfile::NamedTempFile::new().unwrap();
+        tmp_file.write_all(yaml.as_bytes()).unwrap();
+        tmp_file.flush().unwrap();
+        Ok(tmp_file)
+    }
+
+    #[test]
+    fn test_parse_duration() {
+        assert_eq!(parse_duration_str("5s").unwrap(), Duration::from_secs(5));
+        assert_eq!(parse_duration_str("3m").unwrap(), Duration::from_secs(180));
+        assert_eq!(parse_duration_str("1h").unwrap(), Duration::from_secs(3600));
+        assert_eq!(
+            parse_duration_str("2d").unwrap(),
+            Duration::from_secs(172800)
+        );
+    }
+
+    #[test]
+    fn test_parse_duration_invalid() {
+        assert!(parse_duration_str("5").is_err());
+        assert!(parse_duration_str("5x").is_err());
+    }
+
+    #[test]
+    fn test_config() {
+        let yaml = r#"
+---
+services:
+  test:
+    url: https://epazote.io
+    every: 30s
+    headers:
+      X-Custom-Header: TestValue
+    expect:
+      status: 200
+      "#;
+
+        let tmp_file = create_config(yaml).unwrap();
+        let config_file = tmp_file.path().to_path_buf();
+        let config = Config::new(config_file).unwrap();
+
+        assert_eq!(config.services.len(), 1);
+        assert_eq!(
+            config.services["test"].url,
+            Some("https://epazote.io".to_string())
+        );
+        assert_eq!(config.services["test"].every, Duration::from_secs(30));
+        assert_eq!(
+            config.services["test"].headers.as_ref().unwrap()["X-Custom-Header"],
+            "TestValue"
+        );
+        assert_eq!(config.services["test"].expect.status, 200);
+
+        // check method
+        assert_eq!(config.services["test"].method, HttpMethod::Get);
+
+        // follow_redirects is not set
+        assert_eq!(config.services["test"].follow_redirects, None);
+
+        // insecure is not set
+        assert_eq!(config.services["test"].insecure, None);
+    }
+
+    #[test]
+    fn test_bad_config_url_and_test() {
+        let yaml = r#"
+---
+services:
+  test:
+    url: https://epazote.io
+    every: 30s
+    headers:
+      X-Custom-Header: TestValue
+    expect:
+      status: 200
+    test: "echo test"
+      "#;
+
+        let tmp_file = create_config(yaml).unwrap();
+        let config_file = tmp_file.path().to_path_buf();
+        let config = Config::new(config_file);
+
+        assert!(config.is_err());
+    }
+
+    #[test]
+    fn test_bad_config_missing_url_and_test() {
+        let yaml = r#"
+---
+services:
+  test:
+    every: 30s
+    headers:
+      X-Custom-Header: TestValue
+    expect:
+      status: 200
+      "#;
+
+        let tmp_file = create_config(yaml).unwrap();
+        let config_file = tmp_file.path().to_path_buf();
+        let config = Config::new(config_file);
+
+        assert!(config.is_err());
+    }
+
+    #[test]
+    fn test_all_http_methods_case_insensitive() {
+        let methods = vec![
+            "GET", "get", "Get", "POST", "post", "Post", "PUT", "put", "Put", "DELETE", "delete",
+            "Delete", "PATCH", "patch", "Patch", "HEAD", "head", "Head", "OPTIONS", "options",
+            "Options", "CONNECT", "connect", "Connect", "TRACE", "trace", "Trace",
+        ];
+
+        for method in methods {
+            let yaml = format!(
+                r#"
+---
+services:
+  test:
+    url: https://epazote.io
+    every: 30s
+    method: {}
+    expect:
+      status: 200
+"#,
+                method
+            );
+
+            let tmp_file = create_config(&yaml).unwrap();
+            let config_file = tmp_file.path().to_path_buf();
+            let config = Config::new(config_file).unwrap();
+
+            assert_eq!(
+                config.services["test"].method.to_string(),
+                method.to_uppercase(),
+                "Failed for method: {}",
+                method
+            );
+        }
+    }
+
+    #[test]
+    fn test_body_type_json() {
+        let yaml = r#"
+---
+services:
+  test:
+    url: https://epazote.io
+    method: POST
+    body:
+      json:
+        key: value
+        oi: hola
+    every: 30s
+    expect:
+      status: 200
+    "#;
+
+        let expected_json = json!({
+            "key": "value",
+            "oi": "hola"
+        });
+
+        let tmp_file = create_config(yaml).unwrap();
+        let config_file = tmp_file.path().to_path_buf();
+        let config = Config::new(config_file).unwrap();
+
+        let service = config.services.get("test").unwrap();
+        let body = service.body.as_ref().unwrap();
+
+        assert_eq!(body, &BodyType::Json(expected_json));
     }
 }

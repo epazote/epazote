@@ -5,7 +5,7 @@ use crate::cli::{
 use anyhow::{anyhow, Result};
 use reqwest::{header::HeaderMap, Client, Method, RequestBuilder, StatusCode};
 use tokio::process::Command;
-use tracing::info;
+use tracing::{debug, info};
 
 pub fn build_http_request(
     client: &Client,
@@ -22,6 +22,8 @@ pub fn build_http_request(
 
     if let Some(body) = &service_details.body {
         let mut content_type_set = false;
+
+        debug!("Building HTTP request with body: {:?}", body);
 
         // Check if Content-Type is already set in headers
         if let Some(headers) = &service_details.headers {
@@ -121,11 +123,23 @@ async fn execute_fallback_command(cmd: &str) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::config::{Expect, HttpMethod, ServiceDetails};
+    use crate::cli::{
+        actions::client::build_client,
+        config::{Config, Expect, HttpMethod, ServiceDetails},
+    };
     use mockito::Server;
     use reqwest::StatusCode;
-    use std::sync::Arc;
+    use serde_json::json;
+    use std::{io::Write, sync::Arc};
     use tokio::time::Duration;
+
+    // Helper to create config from YAML
+    fn create_config(yaml: &str) -> Config {
+        let mut tmp_file = tempfile::NamedTempFile::new().unwrap();
+        tmp_file.write_all(yaml.as_bytes()).unwrap();
+        tmp_file.flush().unwrap();
+        Config::new(tmp_file.path().to_path_buf()).unwrap()
+    }
 
     #[tokio::test]
     async fn test_execute_fallback_command() {
@@ -180,5 +194,68 @@ mod tests {
 
         assert!(response.is_ok());
         println!("{:?}", response.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_json() {
+        // Start mock server
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r#"
+---
+services:
+  test:
+    url: {}/test
+    method: POST
+    body:
+      json:
+        key: value
+        oi: hola
+    every: 30s
+    headers:
+      X-Custom-Header: TestValue
+    expect:
+      status: 200
+    "#,
+            mock_url
+        );
+
+        let config = create_config(&yaml);
+        let service = config.services.get("test").unwrap();
+
+        // Define expected JSON body
+        let expected_json = json!({
+            "key": "value",
+            "oi": "hola"
+        });
+
+        let _ = env_logger::try_init();
+        let _mock = server
+            .mock("POST", "/test")
+            .match_header("X-Custom-Header", "TestValue")
+            .match_header("Content-Type", "application/json")
+            .match_header(
+                "User-Agent",
+                mockito::Matcher::Regex("epazote.*".to_string()),
+            )
+            .match_body(mockito::Matcher::Json(expected_json.clone()))
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let (builder, _client_config) = build_client(service).unwrap();
+        let client = builder.build().unwrap();
+        let request = build_http_request(&client, service).unwrap();
+
+        if let Some(body) = &config.services.get("test").unwrap().body {
+            let json_body = serde_json::to_string(body).unwrap();
+            assert_eq!(json_body, expected_json.to_string());
+        }
+
+        let response = client.execute(request.build().unwrap()).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }
