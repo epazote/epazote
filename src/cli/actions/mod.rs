@@ -1,4 +1,5 @@
 pub mod metrics;
+pub mod request;
 pub mod run;
 pub mod ssl;
 
