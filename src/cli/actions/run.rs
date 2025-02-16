@@ -144,8 +144,6 @@ async fn scan_service(
 
             // Make the request
             let response = client.execute(request).await?;
-            let status = response.status();
-            let headers = response.headers();
 
             // Record response time
             let response_time = start_time.elapsed().as_secs_f64();
@@ -155,7 +153,7 @@ async fn scan_service(
                 .observe(response_time);
 
             // Handle the response
-            handle_http_response(service_name, service_details, status, headers, metrics).await?;
+            handle_http_response(service_name, service_details, response, metrics).await?;
         }
 
         ServiceAction::Command(command) => {

@@ -63,7 +63,7 @@ const fn default_http_method() -> HttpMethod {
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
-#[serde(untagged)]
+#[serde(rename_all = "kebab-case", untagged)]
 pub enum BodyType {
     Json(serde_json::Value),       // Covers structured JSON data
     Form(HashMap<String, String>), // Covers form-encoded data
@@ -76,10 +76,22 @@ impl<'de> Deserialize<'de> for BodyType {
         D: Deserializer<'de>,
     {
         let value = serde_json::Value::deserialize(deserializer)?;
-        value.clone().get("json").map_or_else(
-            || Ok(Self::Json(value)),
-            |json_value| Ok(Self::Json(json_value.clone())),
-        )
+
+        if let Some(json_value) = value.get("json") {
+            return Ok(Self::Json(json_value.clone()));
+        }
+
+        if let Some(form) = value.get("form") {
+            let form_map = serde_json::from_value::<HashMap<String, String>>(form.clone())
+                .map_err(serde::de::Error::custom)?;
+            return Ok(Self::Form(form_map));
+        }
+
+        if let Some(text) = value.as_str() {
+            return Ok(Self::Text(text.to_string()));
+        }
+
+        serde_json::from_value(value).map_err(serde::de::Error::custom)
     }
 }
 
