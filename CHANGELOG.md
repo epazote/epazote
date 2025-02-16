@@ -2,7 +2,7 @@ Changelog
 =========
 
 ## 0.7.0
-- Search in anything in the response body
+- expect:body added support for regex matching when starting with `r`, defaults to `r".*<input>.*"`.
 
 ## 0.6.0
 - Allow POST, PUT, DELETE, PATCH, OPTIONS, HEAD, TRACE, CONNECT methods.
