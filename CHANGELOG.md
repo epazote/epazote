@@ -1,6 +1,12 @@
 Changelog
 =========
 
+## 0.7.0
+- Search in anything in the response body
+
+## 0.6.0
+- Allow POST, PUT, DELETE, PATCH, OPTIONS, HEAD, TRACE, CONNECT methods.
+
 ## 0.5.0
 - Complete rewrite of the project in Rust 🦀
 
