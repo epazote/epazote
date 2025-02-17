@@ -1,5 +1,8 @@
-test: clippy
+test: build-bin clippy
   cargo test
+
+build-bin:
+  cargo build --bins
 
 clippy:
   cargo clippy --all -- -W clippy::all -W clippy::nursery -D warnings
