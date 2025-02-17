@@ -103,20 +103,32 @@ pub async fn handle_http_response(
     Ok(is_match)
 }
 
-/// Generates a regex pattern from the input string
-/// If input starts with r", extract the raw regex part (strip r" and ending quote if present)
+// Generates a regex pattern from the input string.
+/// - If input starts with `r"`, extract and use it as a raw regex (strip `r"` and trailing `"` if present).
+/// - Trims input before processing to remove extra whitespace.
 fn generate_regex_pattern(input: &str) -> Result<Regex> {
-    let pattern = if input.starts_with("r\"") {
-        let raw_regex = input.trim_start_matches("r\"").trim_end_matches('"');
-        raw_regex.to_string()
-    } else {
-        format!(r".*{}.*", regex::escape(input)) // Escape input to prevent regex injection
-    };
+    let trimmed_input = input.trim();
 
-    debug!("Generated regex pattern: {}", pattern);
+    if trimmed_input.is_empty() {
+        return Err(anyhow!("Input regex pattern cannot be empty"));
+    }
 
-    // Compile and return the regex
-    Regex::new(&pattern).map_err(|e| e.into())
+    let pattern = trimmed_input.strip_prefix("r\"").map_or_else(
+        // Escape the input to prevent regex injection
+        || format!(r".*{}.*", regex::escape(trimmed_input)),
+        // If prefix exists, strip suffix and use raw regex
+        |raw| raw.strip_suffix('"').unwrap_or(raw).to_string(),
+    );
+
+    debug!(
+        "Generated regex for: {}, pattern: {}",
+        trimmed_input, pattern
+    );
+
+    Regex::new(&pattern).map_err(|e| {
+        debug!("Regex compilation failed: {}", e);
+        e.into()
+    })
 }
 
 /// Executes the fallback command
@@ -155,23 +167,36 @@ mod tests {
 
     #[test]
     fn test_generate_regex_pattern() {
+        // Normal input should be escaped and wrapped in ".* .*"
         let pattern = generate_regex_pattern("test").unwrap();
         assert_eq!(pattern.as_str(), r".*test.*");
 
-        let pattern = generate_regex_pattern("r\"test\"").unwrap();
+        // Raw regex should be extracted without modification
+        let pattern = generate_regex_pattern(r#"r"test""#).unwrap();
         assert_eq!(pattern.as_str(), "test");
 
-        let pattern = generate_regex_pattern("r\"test").unwrap();
+        // Raw regex without closing quote should still work
+        let pattern = generate_regex_pattern(r#"r"test"#).unwrap();
         assert_eq!(pattern.as_str(), "test");
 
-        let pattern = generate_regex_pattern("r\"test\"").unwrap();
-        assert_eq!(pattern.as_str(), "test");
-
-        let pattern = generate_regex_pattern("hello world").unwrap();
-        assert_eq!(pattern.as_str(), r".*hello world.*");
-
+        // Raw regex with extra quotes should be handled
         let pattern = generate_regex_pattern(r#"r"(?i).*hello.*""#).unwrap();
         assert_eq!(pattern.as_str(), "(?i).*hello.*");
+
+        // Standard input should be escaped
+        let pattern = generate_regex_pattern("hello world").unwrap();
+        assert_eq!(pattern.as_str(), r".*hello world.*"); // Space should be escaped
+                                                          //
+                                                          // Ensure regex matching works
+        assert!(pattern.is_match("this is a hello world test"));
+        assert!(!pattern.is_match("this is a goodbye test"));
+
+        // the . should be escaped
+        let pattern = generate_regex_pattern("hello.world").unwrap();
+        assert_eq!(pattern.as_str(), r".*hello\.world.*"); // Space should be escaped
+                                                           //
+        let pattern = generate_regex_pattern("a+b*").unwrap();
+        assert_eq!(pattern.as_str(), r".*a\+b\*.*"); // Space should be escaped
     }
 
     #[tokio::test]
@@ -452,6 +477,56 @@ services:
             .with_header("content-type", "text/plain")
             .with_header("x-api-key", "1234")
             .with_body("world-sopas-hello")
+            .match_header(
+                "User-Agent",
+                mockito::Matcher::Regex("epazote.*".to_string()),
+            )
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let (builder, _client_config) = build_client(service).unwrap();
+        let client = builder.build().unwrap();
+        let request = build_http_request(&client, service).unwrap();
+
+        let response = client.execute(request.build().unwrap()).await.unwrap();
+
+        let rs = handle_http_response("test", service, response, &ServiceMetrics::new().unwrap())
+            .await
+            .unwrap();
+
+        assert!(rs);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_expect_body_regex() {
+        // Start mock server
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r#"
+---
+services:
+  test:
+    url: {}/test
+    every: 30s
+    expect:
+      status: 200
+      body: r"\b(?:sopas|cit-02)\b" # match sopas or cit-02
+    "#,
+            mock_url
+        );
+
+        let config = create_config(&yaml);
+        let service = config.services.get("test").unwrap();
+
+        let _ = env_logger::try_init();
+        let _mock = server
+            .mock("GET", "/test")
+            .with_header("content-type", "text/plain")
+            .with_header("x-api-key", "1234")
+            .with_body("world spas hello ini-cit-02")
             .match_header(
                 "User-Agent",
                 mockito::Matcher::Regex("epazote.*".to_string()),
