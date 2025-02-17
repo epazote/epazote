@@ -102,9 +102,13 @@ services:
     fn test_defaults() -> Result<()> {
         let dir = get_config_dir("epazote.yml")?;
 
+        let original = env::current_dir()?;
+
         std::env::set_current_dir(dir.path())?;
 
         let matches = new().try_get_matches_from(["epazote"]);
+
+        std::env::set_current_dir(original)?;
 
         assert!(matches.is_ok());
 
@@ -127,13 +131,14 @@ services:
     fn test_defaults_no_epazote() -> Result<()> {
         let dir = get_config_dir("no-epazote.yml")?; // Create temp directory with config file
 
-        // Change the current directory to the temporary directory
+        let original = env::current_dir()?;
+
         std::env::set_current_dir(dir.path())?;
 
-        // Execute the command parser
         let matches = new().try_get_matches_from(["epazote"]);
 
-        // Assert that the command ran without errors
+        std::env::set_current_dir(original)?;
+
         assert!(matches.is_err());
 
         Ok(())
@@ -144,13 +149,14 @@ services:
     fn test_custom() -> Result<()> {
         let dir = get_config_dir("custom.yml")?; // Create temp directory with config file
 
-        // Change the current directory to the temporary directory
+        let original = env::current_dir()?;
+
         std::env::set_current_dir(dir.path())?;
 
-        // Execute the command parser
         let matches = new().try_get_matches_from(["epazote", "-c", "custom.yml", "-p", "8080"]);
 
-        // Assert that the command ran without errors
+        std::env::set_current_dir(original)?;
+
         assert!(matches.is_ok());
 
         let m = matches.unwrap();
@@ -172,13 +178,14 @@ services:
     fn test_verbose() -> Result<()> {
         let dir = get_config_dir("epazote.yml")?; // Create temp directory with config file
 
-        // Change the current directory to the temporary directory
+        let original = env::current_dir()?;
+
         std::env::set_current_dir(dir.path())?;
 
-        // Execute the command parser
         let matches = new().try_get_matches_from(["epazote", "-vv"]);
 
-        // Assert that the command ran without errors
+        std::env::set_current_dir(original)?;
+
         assert!(matches.is_ok());
 
         let m = matches.unwrap();
