@@ -2,7 +2,7 @@ Changelog
 =========
 
 ## 0.7.0
-- expect:body added support for regex matching when starting with `r`, defaults to `r".*<input>.*"`.
+- expect:body added support for regex matching when starting with `r"`, defaults to `r".*<input>.*"`.
 - default port /metrics to 9080
 
 ## 0.6.0
