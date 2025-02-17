@@ -62,6 +62,8 @@ pub fn new() -> Command {
 mod tests {
     use super::*;
     use anyhow::Result;
+    use assert_cmd::Command;
+    use predicates::prelude::*;
     use serial_test::serial;
     use std::fs::File;
     use std::io::Write;
@@ -86,11 +88,20 @@ services:
     }
 
     #[test]
+    fn test_help() {
+        let mut cmd = Command::cargo_bin("epazote").unwrap();
+        let assert = cmd.arg("--help").assert();
+
+        assert.stdout(predicate::str::contains(
+            "Automated HTTP (microservices) supervisor 🌿",
+        ));
+    }
+
+    #[test]
     #[serial]
     fn test_defaults() -> Result<()> {
-        let dir = get_config_dir("epazote.yml")?; // Create temp directory with config file
+        let dir = get_config_dir("epazote.yml")?;
 
-        // Change the current directory to the temporary directory
         std::env::set_current_dir(dir.path())?;
 
         let matches = new().try_get_matches_from(["epazote"]);
