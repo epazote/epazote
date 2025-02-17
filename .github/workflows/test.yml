@@ -70,5 +70,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: build
+        run: cargo build
+
       - name: test
         run: cargo test
