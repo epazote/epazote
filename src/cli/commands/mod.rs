@@ -109,7 +109,10 @@ services:
     #[test]
     fn test_default_no_config_in_path() -> Result<()> {
         let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap();
-        let assert = cmd.current_dir("/tmp").assert();
+
+        let temp_dir = std::env::temp_dir();
+
+        let assert = cmd.current_dir(temp_dir).assert();
 
         assert.stderr(predicate::str::contains(
             "Invalid file path of file does not exists",
