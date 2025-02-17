@@ -64,7 +64,6 @@ mod tests {
     use anyhow::Result;
     use assert_cmd::Command;
     use predicates::prelude::*;
-    use serial_test::serial;
     use std::fs::File;
     use std::io::Write;
     use tempfile::Builder;
@@ -89,7 +88,7 @@ services:
 
     #[test]
     fn test_help() {
-        let mut cmd = Command::cargo_bin("epazote").unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap();
         let assert = cmd.arg("--help").assert();
 
         assert.stdout(predicate::str::contains(
@@ -98,17 +97,30 @@ services:
     }
 
     #[test]
-    #[serial]
+    fn test_default_no_config() {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap();
+        let assert = cmd.arg("-c no-config.yml").assert();
+
+        assert.stderr(predicate::str::contains(
+            "Invalid file path of file does not exists",
+        ));
+    }
+
+    #[test]
+    fn test_default_no_config_in_path() -> Result<()> {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap();
+        let assert = cmd.current_dir("/tmp").assert();
+
+        assert.stderr(predicate::str::contains(
+            "Invalid file path of file does not exists",
+        ));
+
+        Ok(())
+    }
+
+    #[test]
     fn test_defaults() -> Result<()> {
-        let dir = get_config_dir("epazote.yml")?;
-
-        let original = env::current_dir()?;
-
-        std::env::set_current_dir(dir.path())?;
-
         let matches = new().try_get_matches_from(["epazote"]);
-
-        std::env::set_current_dir(original)?;
 
         assert!(matches.is_ok());
 
@@ -127,17 +139,8 @@ services:
     }
 
     #[test]
-    #[serial]
     fn test_defaults_no_epazote() -> Result<()> {
-        let dir = get_config_dir("no-epazote.yml")?; // Create temp directory with config file
-
-        let original = env::current_dir()?;
-
-        std::env::set_current_dir(dir.path())?;
-
-        let matches = new().try_get_matches_from(["epazote"]);
-
-        std::env::set_current_dir(original)?;
+        let matches = new().try_get_matches_from(["epazote", "-c", "no-epazote.yml"]);
 
         assert!(matches.is_err());
 
@@ -145,17 +148,18 @@ services:
     }
 
     #[test]
-    #[serial]
     fn test_custom() -> Result<()> {
         let dir = get_config_dir("custom.yml")?; // Create temp directory with config file
 
-        let original = env::current_dir()?;
+        let config_file = dir.path().join("custom.yml");
 
-        std::env::set_current_dir(dir.path())?;
-
-        let matches = new().try_get_matches_from(["epazote", "-c", "custom.yml", "-p", "8080"]);
-
-        std::env::set_current_dir(original)?;
+        let matches = new().try_get_matches_from([
+            "epazote",
+            "-c",
+            config_file.to_str().unwrap(),
+            "-p",
+            "8080",
+        ]);
 
         assert!(matches.is_ok());
 
@@ -163,7 +167,7 @@ services:
 
         assert_eq!(
             m.get_one::<PathBuf>("config").map(|p| p.to_str().unwrap()),
-            Some("custom.yml")
+            Some(config_file.to_str().unwrap())
         );
 
         assert_eq!(m.get_one::<u16>("port").copied(), Some(8080));
@@ -174,17 +178,8 @@ services:
     }
 
     #[test]
-    #[serial]
     fn test_verbose() -> Result<()> {
-        let dir = get_config_dir("epazote.yml")?; // Create temp directory with config file
-
-        let original = env::current_dir()?;
-
-        std::env::set_current_dir(dir.path())?;
-
         let matches = new().try_get_matches_from(["epazote", "-vv"]);
-
-        std::env::set_current_dir(original)?;
 
         assert!(matches.is_ok());
 
