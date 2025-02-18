@@ -1,5 +1,8 @@
 use crate::cli::{
-    actions::{execute_fallback_command, metrics::ServiceMetrics, should_continue_fallback},
+    actions::{
+        execute_fallback_command, execute_fallback_http, metrics::ServiceMetrics,
+        should_continue_fallback,
+    },
     config::{BodyType, ServiceDetails},
 };
 use anyhow::{anyhow, Result};
@@ -63,6 +66,7 @@ pub async fn handle_http_response(
             );
             e
         })?;
+
         response.text().await.map_or_else(
             |e| {
                 error!("Failed to read response body: {}", e);
@@ -100,6 +104,14 @@ pub async fn handle_http_response(
                     info!(
                         "Executed fallback command for {} with exit code {}",
                         service_name, exit_code
+                    );
+                }
+
+                if let Some(http) = &action.http {
+                    let status = execute_fallback_http(http).await?;
+                    info!(
+                        "Executed fallback HTTP request for {} with status code {}",
+                        service_name, status
                     );
                 }
             }
@@ -458,8 +470,6 @@ services:
         let _ = env_logger::try_init();
         let _mock = server
             .mock("GET", "/test")
-            .with_header("content-type", "text/plain")
-            .with_header("x-api-key", "1234")
             .with_body("world-sopas-hello")
             .match_header(
                 "User-Agent",
@@ -518,9 +528,94 @@ services:
         let _ = env_logger::try_init();
         let _mock = server
             .mock("GET", "/test")
-            .with_header("content-type", "text/plain")
-            .with_header("x-api-key", "1234")
             .with_body("---")
+            .match_header(
+                "User-Agent",
+                mockito::Matcher::Regex("epazote.*".to_string()),
+            )
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let (builder, _client_config) = build_client(service).unwrap();
+        let client = builder.build().unwrap();
+        let request = build_http_request(&client, service).unwrap();
+        let response = client.execute(request.build().unwrap()).await.unwrap();
+
+        let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+
+        let rs1 = handle_http_response(
+            "test-stop",
+            service,
+            response,
+            &ServiceMetrics::new().unwrap(),
+            Arc::clone(&counters),
+        )
+        .await
+        .unwrap();
+
+        assert!(!rs1);
+
+        // Check counter after first attempt
+        let count1 = {
+            let counters_locked = counters.lock().await;
+            *counters_locked.get("test-stop").unwrap_or(&0)
+        };
+        assert_eq!(count1, 1, "Counter should be 1 after first attempt");
+
+        let request = build_http_request(&client, service).unwrap();
+        let response = client.execute(request.build().unwrap()).await.unwrap();
+
+        let rs2 = handle_http_response(
+            "test-stop",
+            service,
+            response,
+            &ServiceMetrics::new().unwrap(),
+            Arc::clone(&counters),
+        )
+        .await
+        .unwrap();
+
+        assert!(!rs2);
+
+        // Check counter after first attempt
+        let count2 = {
+            let counters_locked = counters.lock().await;
+            *counters_locked.get("test-stop").unwrap_or(&0)
+        };
+        assert_eq!(count2, 2, "Counter should be 1 after first attempt");
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_expect_if_not_http() {
+        // Start mock server
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r#"
+---
+services:
+  test-stop:
+    url: {}/test
+    every: 30s
+    expect:
+      status: 200
+      body: http
+      if_not:
+        stop: 2
+        http: {}/notify?milei=libra
+    "#,
+            mock_url, mock_url
+        );
+
+        let config = create_config(&yaml);
+        let service = config.services.get("test-stop").unwrap();
+
+        let _ = env_logger::try_init();
+        let _mock = server
+            .mock("GET", "/test")
+            .with_body("---milei---")
             .match_header(
                 "User-Agent",
                 mockito::Matcher::Regex("epazote.*".to_string()),

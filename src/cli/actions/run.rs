@@ -1,7 +1,7 @@
 use crate::cli::{
     actions::{
         client::build_client,
-        execute_fallback_command,
+        execute_fallback_command, execute_fallback_http,
         metrics::{metrics_server, ServiceMetrics},
         request::{build_http_request, handle_http_response},
         should_continue_fallback,
@@ -191,6 +191,14 @@ async fn scan_service(
                         if let Some(cmd) = &action.cmd {
                             let exit_code = execute_fallback_command(cmd).await?;
                             debug!("Fallback action executed with exit code: {}", exit_code);
+                        }
+
+                        if let Some(http) = &action.http {
+                            let status = execute_fallback_http(http).await?;
+                            info!(
+                                "Executed fallback HTTP request for {} with status code {}",
+                                service_name, status
+                            );
                         }
                     }
                 }

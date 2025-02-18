@@ -4,6 +4,7 @@ pub mod request;
 pub mod run;
 pub mod ssl;
 
+use crate::cli::actions::client::APP_USER_AGENT;
 use crate::cli::config;
 use anyhow::{anyhow, Result};
 use std::{collections::HashMap, env, path::PathBuf, sync::Arc};
@@ -26,6 +27,19 @@ async fn execute_fallback_command(cmd: &str) -> Result<i32> {
     };
 
     Ok(exit_code)
+}
+
+/// Call the fallback HTTP request if the service is not reachable
+async fn execute_fallback_http(url: &str) -> Result<i32> {
+    let client = reqwest::Client::builder()
+        .user_agent(APP_USER_AGENT)
+        .build()?;
+
+    let response = client.get(url).send().await?;
+
+    let status = response.status();
+
+    Ok(status.as_u16() as i32)
 }
 
 /// Check if stop limit is reached and if we should continue
@@ -58,6 +72,7 @@ async fn should_continue_fallback(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mockito::Server;
 
     #[tokio::test]
     async fn test_execute_fallback_command() {
@@ -84,5 +99,31 @@ mod tests {
 
         let should_continue = should_continue_fallback("test", &counters, &action).await;
         assert_eq!(should_continue, false);
+    }
+
+    #[tokio::test]
+    async fn test_execute_fallback_http() {
+        let mut server = Server::new_async().await;
+        let _m = server.mock("GET", "/status/200").with_status(200).create();
+
+        let exit_code = execute_fallback_http(format!("{}/status/200", &server.url()).as_str())
+            .await
+            .unwrap();
+
+        assert_eq!(exit_code, 200);
+
+        // bad request
+        let exit_code = execute_fallback_http(format!("{}/status/400", &server.url()).as_str())
+            .await
+            .unwrap();
+
+        assert_eq!(exit_code, 501);
+    }
+
+    #[tokio::test]
+    async fn test_execute_fallback_http_error() {
+        let rs = execute_fallback_http("telnet://0").await;
+
+        assert!(rs.is_err());
     }
 }
