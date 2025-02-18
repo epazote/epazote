@@ -4,6 +4,7 @@ use crate::cli::{
         execute_fallback_command,
         metrics::{metrics_server, ServiceMetrics},
         request::{build_http_request, handle_http_response},
+        should_continue_fallback,
         ssl::check_ssl_certificate,
         Action,
     },
@@ -186,29 +187,11 @@ async fn scan_service(
 
             if exit_status != service_details.expect.status as i32 {
                 if let Some(action) = &service_details.expect.if_not {
-                    // Lock the counters and modify them
-                    let mut counters = counters.lock().await;
-                    let count = counters.entry(service_name.to_string()).or_insert(0);
-
-                    // Check if we should stop processing
-                    if let Some(stop) = action.stop {
-                        if *count >= stop {
-                            debug!(
-                                "Service '{}' reached stop limit ({}), skipping fallback",
-                                service_name, stop
-                            );
-                            return Ok(());
+                    if should_continue_fallback(service_name, &counters, action).await {
+                        if let Some(cmd) = &action.cmd {
+                            let exit_code = execute_fallback_command(cmd).await?;
+                            debug!("Fallback action executed with exit code: {}", exit_code);
                         }
-                    }
-
-                    *count += 1;
-
-                    // Mutex is dropped here (automatically when `counters` goes out of scope)
-                    drop(counters);
-
-                    if let Some(cmd) = action.cmd.as_ref() {
-                        let exit_code = execute_fallback_command(cmd).await?;
-                        debug!("Fallback action executed with exit code: {}", exit_code);
                     }
                 }
             }

@@ -1,5 +1,5 @@
 use crate::cli::{
-    actions::{execute_fallback_command, metrics::ServiceMetrics},
+    actions::{execute_fallback_command, metrics::ServiceMetrics, should_continue_fallback},
     config::{BodyType, ServiceDetails},
 };
 use anyhow::{anyhow, Result};
@@ -94,32 +94,14 @@ pub async fn handle_http_response(
 
     if !is_match {
         if let Some(action) = &service_details.expect.if_not {
-            // Lock the counters and modify them
-            let mut counters = counters.lock().await;
-            let count = counters.entry(service_name.to_string()).or_insert(0);
-
-            // Check if we should stop processing
-            if let Some(stop) = action.stop {
-                if *count >= stop {
-                    debug!(
-                        "Service '{}' reached stop limit ({}), skipping fallback",
-                        service_name, stop
+            if should_continue_fallback(service_name, &counters, action).await {
+                if let Some(cmd) = &action.cmd {
+                    let exit_code = execute_fallback_command(cmd).await?;
+                    info!(
+                        "Executed fallback command for {} with exit code {}",
+                        service_name, exit_code
                     );
-                    return Ok(is_match);
                 }
-            }
-
-            *count += 1;
-
-            // Mutex is dropped here (automatically when `counters` goes out of scope)
-            drop(counters);
-
-            if let Some(cmd) = action.cmd.as_ref() {
-                let exit_code = execute_fallback_command(cmd).await?;
-                info!(
-                    "Executed fallback command for {} with exit code {}",
-                    service_name, exit_code
-                );
             }
         }
     }
@@ -509,7 +491,7 @@ services:
     }
 
     #[tokio::test]
-    async fn test_handle_http_response_expect_body_regex() {
+    async fn test_handle_http_response_expect_body_regex_stop() {
         // Start mock server
         let mut server = Server::new_async().await;
         let mock_url = server.url();
@@ -518,25 +500,27 @@ services:
             r#"
 ---
 services:
-  test:
+  test-stop:
     url: {}/test
     every: 30s
     expect:
       status: 200
       body: r"\b(?:sopas|cit-02)\b" # match sopas or cit-02
+      if_not:
+        stop: 2
     "#,
             mock_url
         );
 
         let config = create_config(&yaml);
-        let service = config.services.get("test").unwrap();
+        let service = config.services.get("test-stop").unwrap();
 
         let _ = env_logger::try_init();
         let _mock = server
             .mock("GET", "/test")
             .with_header("content-type", "text/plain")
             .with_header("x-api-key", "1234")
-            .with_body("world spas hello ini-cit-02")
+            .with_body("---")
             .match_header(
                 "User-Agent",
                 mockito::Matcher::Regex("epazote.*".to_string()),
@@ -548,21 +532,49 @@ services:
         let (builder, _client_config) = build_client(service).unwrap();
         let client = builder.build().unwrap();
         let request = build_http_request(&client, service).unwrap();
-
         let response = client.execute(request.build().unwrap()).await.unwrap();
 
         let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
-        let rs = handle_http_response(
-            "test",
+        let rs1 = handle_http_response(
+            "test-stop",
             service,
             response,
             &ServiceMetrics::new().unwrap(),
-            counters,
+            Arc::clone(&counters),
         )
         .await
         .unwrap();
 
-        assert!(rs);
+        assert!(!rs1);
+
+        // Check counter after first attempt
+        let count1 = {
+            let counters_locked = counters.lock().await;
+            *counters_locked.get("test-stop").unwrap_or(&0)
+        };
+        assert_eq!(count1, 1, "Counter should be 1 after first attempt");
+
+        let request = build_http_request(&client, service).unwrap();
+        let response = client.execute(request.build().unwrap()).await.unwrap();
+
+        let rs2 = handle_http_response(
+            "test-stop",
+            service,
+            response,
+            &ServiceMetrics::new().unwrap(),
+            Arc::clone(&counters),
+        )
+        .await
+        .unwrap();
+
+        assert!(!rs2);
+
+        // Check counter after first attempt
+        let count2 = {
+            let counters_locked = counters.lock().await;
+            *counters_locked.get("test-stop").unwrap_or(&0)
+        };
+        assert_eq!(count2, 2, "Counter should be 1 after first attempt");
     }
 }
