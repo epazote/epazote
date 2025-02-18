@@ -115,7 +115,6 @@ pub struct ServiceDetails {
     #[serde(rename = "read_limit")]
     pub read_limit: Option<i64>,
 
-    pub stop: Option<i8>,
     pub test: Option<String>,
 
     #[serde(deserialize_with = "parse_duration", default = "default_timeout")]
@@ -152,7 +151,9 @@ pub struct Expect {
 
 #[derive(Default, Debug, Deserialize, Clone)]
 pub struct Action {
-    pub cmd: String,
+    pub cmd: Option<String>,
+    pub http: Option<String>,
+    pub stop: Option<usize>,
 }
 
 // Default timeout value

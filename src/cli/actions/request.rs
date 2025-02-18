@@ -1,11 +1,12 @@
 use crate::cli::{
-    actions::metrics::ServiceMetrics,
+    actions::{execute_fallback_command, metrics::ServiceMetrics},
     config::{BodyType, ServiceDetails},
 };
 use anyhow::{anyhow, Result};
 use regex::Regex;
 use reqwest::{Client, Method, RequestBuilder};
-use tokio::process::Command;
+use std::{collections::HashMap, sync::Arc};
+use tokio::sync::Mutex;
 use tracing::{debug, error, info};
 
 pub fn build_http_request(
@@ -46,6 +47,7 @@ pub async fn handle_http_response(
     service_details: &ServiceDetails,
     response: reqwest::Response,
     metrics: &ServiceMetrics,
+    counters: Arc<Mutex<HashMap<String, usize>>>,
 ) -> Result<bool> {
     let status = response.status();
     let headers = response.headers().clone();
@@ -91,12 +93,34 @@ pub async fn handle_http_response(
     );
 
     if !is_match {
-        if let Some(if_not) = &service_details.expect.if_not {
-            let exit_code = execute_fallback_command(&if_not.cmd).await?;
-            info!(
-                "Executed fallback command for {} with exit code {}",
-                service_name, exit_code
-            );
+        if let Some(action) = &service_details.expect.if_not {
+            // Lock the counters and modify them
+            let mut counters = counters.lock().await;
+            let count = counters.entry(service_name.to_string()).or_insert(0);
+
+            // Check if we should stop processing
+            if let Some(stop) = action.stop {
+                if *count >= stop {
+                    debug!(
+                        "Service '{}' reached stop limit ({}), skipping fallback",
+                        service_name, stop
+                    );
+                    return Ok(is_match);
+                }
+            }
+
+            *count += 1;
+
+            // Mutex is dropped here (automatically when `counters` goes out of scope)
+            drop(counters);
+
+            if let Some(cmd) = action.cmd.as_ref() {
+                let exit_code = execute_fallback_command(cmd).await?;
+                info!(
+                    "Executed fallback command for {} with exit code {}",
+                    service_name, exit_code
+                );
+            }
         }
     }
 
@@ -129,19 +153,6 @@ fn generate_regex_pattern(input: &str) -> Result<Regex> {
         debug!("Regex compilation failed: {}", e);
         e.into()
     })
-}
-
-/// Executes the fallback command
-async fn execute_fallback_command(cmd: &str) -> Result<i32> {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
-    let output = Command::new(shell).arg("-c").arg(cmd).output().await?;
-
-    let exit_code = match output.status.code() {
-        Some(code) => code,
-        None => Err(anyhow!("Process terminated by signal"))?,
-    };
-
-    Ok(exit_code)
 }
 
 #[cfg(test)]
@@ -200,15 +211,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execute_fallback_command() {
-        let exit_code = execute_fallback_command("exit 0").await.unwrap();
-        assert_eq!(exit_code, 0);
-
-        let exit_code = execute_fallback_command("exit 1").await.unwrap();
-        assert_eq!(exit_code, 1);
-    }
-
-    #[tokio::test]
     async fn test_handle_http_response() {
         let mut server = Server::new_async().await;
         let _m = server
@@ -231,7 +233,6 @@ mod tests {
             if_status: None,
             insecure: None,
             read_limit: None,
-            stop: None,
             test: None,
             timeout: Duration::from_secs(5),
             url: Some(format!("{}/health", server.url())),
@@ -240,13 +241,14 @@ mod tests {
         };
 
         let metrics = Arc::new(ServiceMetrics::new().unwrap());
+        let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
         let (builder, _client_config) = build_client(&service).unwrap();
         let client = builder.build().unwrap();
         let request = build_http_request(&client, &service).unwrap();
         let response = client.execute(request.build().unwrap()).await.unwrap();
 
-        let rs = handle_http_response("test", &service, response, &metrics).await;
+        let rs = handle_http_response("test", &service, response, &metrics, counters).await;
 
         assert!(rs.is_ok());
     }
@@ -491,9 +493,17 @@ services:
 
         let response = client.execute(request.build().unwrap()).await.unwrap();
 
-        let rs = handle_http_response("test", service, response, &ServiceMetrics::new().unwrap())
-            .await
-            .unwrap();
+        let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+
+        let rs = handle_http_response(
+            "test",
+            service,
+            response,
+            &ServiceMetrics::new().unwrap(),
+            counters,
+        )
+        .await
+        .unwrap();
 
         assert!(rs);
     }
@@ -541,9 +551,17 @@ services:
 
         let response = client.execute(request.build().unwrap()).await.unwrap();
 
-        let rs = handle_http_response("test", service, response, &ServiceMetrics::new().unwrap())
-            .await
-            .unwrap();
+        let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+
+        let rs = handle_http_response(
+            "test",
+            service,
+            response,
+            &ServiceMetrics::new().unwrap(),
+            counters,
+        )
+        .await
+        .unwrap();
 
         assert!(rs);
     }

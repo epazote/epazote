@@ -1,6 +1,9 @@
 Changelog
 =========
 
+## 0.8.0
+- implemented `STOP` in `if_not` to establish a limit on how many times to retry the action, defaults no limit.
+
 ## 0.7.0
 - expect:body added support for regex matching when starting with `r"`, defaults to `r".*<input>.*"`.
 - default port /metrics to 9080

@@ -1,6 +1,7 @@
 use crate::cli::{
     actions::{
         client::build_client,
+        execute_fallback_command,
         metrics::{metrics_server, ServiceMetrics},
         request::{build_http_request, handle_http_response},
         ssl::check_ssl_certificate,
@@ -11,9 +12,9 @@ use crate::cli::{
 use anyhow::{anyhow, Result};
 use reqwest::Client;
 use rustls::crypto::CryptoProvider;
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::{
-    process::Command,
+    sync::Mutex,
     time::{interval, Instant},
 };
 use tracing::{debug, error, info, instrument};
@@ -41,9 +42,12 @@ pub async fn handle(action: Action) -> Result<()> {
 
     let mut service_handles = Vec::new();
 
+    let service_counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+
     for (service_name, service) in &config.services {
         let service_name = service_name.clone();
         let service_details = service.clone();
+        let counters = service_counters.clone();
 
         let action = if let Some(ref command) = service_details.test {
             ServiceAction::Command(command.clone())
@@ -60,7 +64,15 @@ pub async fn handle(action: Action) -> Result<()> {
         // Spawn a task for each service
         let handle = tokio::spawn(async move {
             let every = service_details.every;
-            run_service(service_name, service_details, action, metrics, every).await;
+            run_service(
+                service_name,
+                service_details,
+                action,
+                metrics,
+                every,
+                counters,
+            )
+            .await;
         });
 
         service_handles.push(handle);
@@ -95,6 +107,7 @@ async fn run_service(
     action: ServiceAction,
     metrics: Arc<ServiceMetrics>,
     interval_duration: Duration,
+    counters: Arc<Mutex<HashMap<String, usize>>>,
 ) {
     let mut interval_timer = interval(interval_duration);
 
@@ -104,7 +117,15 @@ async fn run_service(
         debug!("Running scan for service: {}", service_name);
 
         // Perform the service scan
-        match scan_service(&service_name, &service_details, &action, &metrics).await {
+        match scan_service(
+            &service_name,
+            &service_details,
+            &action,
+            &metrics,
+            counters.clone(),
+        )
+        .await
+        {
             Ok(_) => (),
             Err(e) => {
                 // Increment failure counter
@@ -125,6 +146,7 @@ async fn scan_service(
     service_details: &ServiceDetails,
     action: &ServiceAction,
     metrics: &ServiceMetrics,
+    counters: Arc<Mutex<HashMap<String, usize>>>,
 ) -> Result<()> {
     let start_time = Instant::now();
 
@@ -153,27 +175,41 @@ async fn scan_service(
                 .observe(response_time);
 
             // Handle the response
-            handle_http_response(service_name, service_details, response, metrics).await?;
+            handle_http_response(service_name, service_details, response, metrics, counters)
+                .await?;
         }
 
         ServiceAction::Command(command) => {
             debug!("Executing command: {}", command);
 
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
-            let output = Command::new(shell).arg("-c").arg(command).output().await?;
-
-            let exit_status = output.status.code().unwrap_or(1); // Default to `1` if no exit code
-            debug!("Command executed with exit code: {}", exit_status);
+            let exit_status = execute_fallback_command(command).await.unwrap_or(1);
 
             if exit_status != service_details.expect.status as i32 {
                 if let Some(action) = &service_details.expect.if_not {
-                    debug!("Executing fallback action: {}", action.cmd);
-                    let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
-                    Command::new(shell)
-                        .arg("-c")
-                        .arg(&action.cmd)
-                        .output()
-                        .await?;
+                    // Lock the counters and modify them
+                    let mut counters = counters.lock().await;
+                    let count = counters.entry(service_name.to_string()).or_insert(0);
+
+                    // Check if we should stop processing
+                    if let Some(stop) = action.stop {
+                        if *count >= stop {
+                            debug!(
+                                "Service '{}' reached stop limit ({}), skipping fallback",
+                                service_name, stop
+                            );
+                            return Ok(());
+                        }
+                    }
+
+                    *count += 1;
+
+                    // Mutex is dropped here (automatically when `counters` goes out of scope)
+                    drop(counters);
+
+                    if let Some(cmd) = action.cmd.as_ref() {
+                        let exit_code = execute_fallback_command(cmd).await?;
+                        debug!("Fallback action executed with exit code: {}", exit_code);
+                    }
                 }
             }
         }
@@ -206,7 +242,7 @@ mod tests {
                 header: None,
                 body: None,
                 if_not: if_not.map(|cmd| Action {
-                    cmd: cmd.to_string(),
+                    cmd: Some(cmd.to_string()),
                     ..Default::default()
                 }),
             },
@@ -216,7 +252,6 @@ mod tests {
             if_status: None,
             insecure: None,
             read_limit: None,
-            stop: None,
             test: test_cmd.map(|cmd| cmd.to_string()),
             timeout: Duration::from_secs(5),
             url: None,
@@ -244,6 +279,7 @@ mod tests {
     }
 
     #[test]
+    // this test is only for the test run_command function, not the actual code
     fn test_command_exit_status() {
         let rt = Runtime::new().unwrap();
 
@@ -278,8 +314,17 @@ mod tests {
         let service_details = mock_service_details(Some("exit 0"), 0, None);
         let action = mock_action("exit 0");
         let metrics = Arc::new(ServiceMetrics::new().unwrap());
+        let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
-        let result = scan_service("test-service", &service_details, &action, &metrics).await;
+        let result = scan_service(
+            "test-service",
+            &service_details,
+            &action,
+            &metrics,
+            counters,
+        )
+        .await;
+
         assert!(
             result.is_ok(),
             "Scan service should succeed for a successful command"
@@ -292,8 +337,153 @@ mod tests {
         let service_details = mock_service_details(Some("exit 1"), 0, Some("echo 'Fallback'"));
         let action = mock_action("exit 1");
         let metrics = Arc::new(ServiceMetrics::new().unwrap());
+        let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
-        let result = scan_service("test-service", &service_details, &action, &metrics).await;
+        let result = scan_service(
+            "test-service",
+            &service_details,
+            &action,
+            &metrics,
+            Arc::clone(&counters),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "Scan service should execute fallback for failed command"
+        );
+
+        let counters_locked = counters.lock().await;
+        let count = counters_locked.get("test-service").copied().unwrap_or(0);
+
+        assert_eq!(count, 1, "Counter should have been incremented");
+    }
+
+    /// Test: Scan Service Command - Stops after 2 failures
+    #[tokio::test]
+    async fn test_scan_service_command_failure_with_stop_after_2_attempts() {
+        let mut service_details = mock_service_details(Some("exit 1"), 0, Some("echo 'Fallback'"));
+        let action = mock_action("exit 1");
+
+        // Set stop condition to 2
+        service_details.expect.if_not.as_mut().unwrap().stop = Some(2);
+
+        let metrics = Arc::new(ServiceMetrics::new().unwrap());
+        let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+
+        // First attempt
+        let result1 = scan_service(
+            "test-service",
+            &service_details,
+            &action,
+            &metrics,
+            Arc::clone(&counters),
+        )
+        .await;
+
+        assert!(result1.is_ok(), "First attempt should allow fallback");
+
+        // Check counter after first attempt
+        let count1 = {
+            let counters_locked = counters.lock().await;
+            *counters_locked.get("test-service").unwrap_or(&0)
+        };
+        assert_eq!(count1, 1, "Counter should be 1 after first attempt");
+
+        // Second attempt
+        let result2 = scan_service(
+            "test-service",
+            &service_details,
+            &action,
+            &metrics,
+            Arc::clone(&counters),
+        )
+        .await;
+
+        assert!(result2.is_ok(), "Second attempt should allow fallback");
+
+        // Check counter after second attempt
+        let count2 = {
+            let counters_locked = counters.lock().await;
+            *counters_locked.get("test-service").unwrap_or(&0)
+        };
+        assert_eq!(count2, 2, "Counter should be 2 after second attempt");
+
+        // Third attempt (should NOT execute fallback)
+        let result3 = scan_service(
+            "test-service",
+            &service_details,
+            &action,
+            &metrics,
+            Arc::clone(&counters),
+        )
+        .await;
+
+        assert!(
+            result3.is_ok(),
+            "Third attempt should skip fallback due to stop limit"
+        );
+
+        // Check counter after third attempt (should remain at 2)
+        let count3 = {
+            let counters_locked = counters.lock().await;
+            *counters_locked.get("test-service").unwrap_or(&0)
+        };
+        assert_eq!(count3, 2, "Counter should remain at 2 after third attempt");
+    }
+
+    /// Test: Scan Service Command - Ensure counter can reach 1000 when no stop condition is set
+    #[tokio::test]
+    async fn test_scan_service_command_runs_1000_times_without_stop() {
+        let mut service_details = mock_service_details(Some("exit 1"), 0, Some("echo 'Fallback'"));
+        let action = mock_action("exit 1");
+
+        // Ensure no stop limit is set
+        service_details.expect.if_not.as_mut().unwrap().stop = None;
+
+        let metrics = Arc::new(ServiceMetrics::new().unwrap());
+        let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+
+        // Run scan_service 100 times
+        for _ in 0..100 {
+            let _ = scan_service(
+                "test-service",
+                &service_details,
+                &action,
+                &metrics,
+                Arc::clone(&counters),
+            )
+            .await;
+        }
+
+        // Check that counter reached 1000
+        let final_count = {
+            let counters_locked = counters.lock().await;
+            *counters_locked.get("test-service").unwrap_or(&0)
+        };
+
+        assert_eq!(
+            final_count, 100,
+            "Counter should reach 100 when no stop is set"
+        );
+    }
+
+    /// Test: Scan Service Command - Failure with Fallback and Stop
+    #[tokio::test]
+    async fn test_scan_service_command_failure_with_fallback_and_stop() {
+        let service_details = mock_service_details(Some("exit 1"), 0, Some("echo 'Fallback'"));
+        let action = mock_action("exit 1");
+        let metrics = Arc::new(ServiceMetrics::new().unwrap());
+        let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+
+        let result = scan_service(
+            "test-service",
+            &service_details,
+            &action,
+            &metrics,
+            counters,
+        )
+        .await;
         assert!(
             result.is_ok(),
             "Scan service should execute fallback for failed command"
@@ -324,7 +514,6 @@ mod tests {
             if_status: None,
             insecure: None,
             read_limit: None,
-            stop: None,
             test: None,
             timeout: Duration::from_secs(5),
             url: Some(format!("{}/health", server.url())),
@@ -334,6 +523,7 @@ mod tests {
 
         let action = ServiceAction::Url(Client::new());
         let metrics = Arc::new(ServiceMetrics::new().unwrap());
+        let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
         tokio::spawn(async move {
             run_service(
@@ -342,6 +532,7 @@ mod tests {
                 action,
                 metrics,
                 Duration::from_millis(100),
+                counters,
             )
             .await;
         });
