@@ -2,7 +2,7 @@ Changelog
 =========
 
 ## 0.9.0
-- implemented `http` in  `if_not` to call a URL in case of failure.
+- implemented `http` in `if_not` to call a URL in case of failure.
 
 ## 0.8.0
 - implemented `STOP` in `if_not` to establish a limit on how many times to retry the action, defaults no limit.
