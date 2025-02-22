@@ -4,8 +4,6 @@
 # Epazote 🌿
 Automated HTTP (microservices) supervisor
 
-https://epazote.io
-
 # How to use it
 First you need to install **Epazote**:
 
@@ -26,3 +24,12 @@ services:
             if_not:
                 cmd: systemctl restart app
 ```
+
+## Run Epazote
+
+    epazote -c epazote.yml
+
+> default configuration file is `epazote.yml`
+
+
+https://epazote.io
