@@ -6,6 +6,7 @@ use tokio::net::TcpListener;
 use tracing::{debug, error};
 
 // Metrics struct to hold our Prometheus metrics
+#[derive(Debug)]
 pub struct ServiceMetrics {
     registry: Arc<Registry>,
     pub epazote_status: IntGaugeVec,           // Current state
@@ -106,5 +107,140 @@ pub async fn metrics_handler(State(metrics): State<Arc<ServiceMetrics>>) -> impl
             )
                 .into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::{
+        actions::client::build_client,
+        actions::request::{build_http_request, handle_http_response},
+        config::Config,
+    };
+    use mockito::Server;
+    use std::{collections::HashMap, io::Write, sync::Arc};
+    use tokio::sync::Mutex;
+
+    // Helper to create config from YAML
+    fn create_config(yaml: &str) -> Config {
+        let mut tmp_file = tempfile::NamedTempFile::new().unwrap();
+        tmp_file.write_all(yaml.as_bytes()).unwrap();
+        tmp_file.flush().unwrap();
+        Config::new(tmp_file.path().to_path_buf()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_metrics() {
+        // Start mock server
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r#"
+---
+services:
+  test:
+    url: {}/test
+    every: 30s
+    expect:
+      status: 200
+    "#,
+            mock_url
+        );
+
+        let config = create_config(&yaml);
+        let service = config.services.get("test").unwrap();
+
+        let _ = env_logger::try_init();
+        let mock = server
+            .mock("GET", "/test")
+            .match_header(
+                "User-Agent",
+                mockito::Matcher::Regex("epazote.*".to_string()),
+            )
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let (builder, _client_config) = build_client(service).unwrap();
+        let client = builder.build().unwrap();
+        let request = build_http_request(&client, service).unwrap();
+        let response = client.execute(request.build().unwrap()).await.unwrap();
+        let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+        let metrics = Arc::new(ServiceMetrics::new().unwrap());
+
+        // Fetch initial values
+        let initial_status = metrics
+            .epazote_status
+            .get_metric_with_label_values(&["test"])
+            .map(|m| m.get())
+            .unwrap_or(0);
+
+        let initial_failures = metrics
+            .epazote_failures_total
+            .get_metric_with_label_values(&["test"])
+            .map(|m| m.get())
+            .unwrap_or(0);
+
+        let rs = handle_http_response("test", &service, response, &metrics, counters.clone()).await;
+
+        assert!(rs.is_ok());
+
+        // Fetch updated values
+        let updated_status = metrics
+            .epazote_status
+            .get_metric_with_label_values(&["test"])
+            .map(|m| m.get())
+            .unwrap_or(0);
+
+        let updated_failures = metrics
+            .epazote_failures_total
+            .get_metric_with_label_values(&["test"])
+            .map(|m| m.get())
+            .unwrap_or(0);
+
+        assert_ne!(
+            initial_status, updated_status,
+            "Service status should change after a successful request"
+        );
+
+        assert_eq!(
+            updated_status, 1,
+            "Service status should be 1 after a successful request"
+        );
+        assert_eq!(
+            updated_failures, initial_failures,
+            "Failures should not increase after a successful request"
+        );
+
+        mock.remove();
+
+        let _mock = server
+            .mock("GET", "/test")
+            .with_status(500)
+            .create_async()
+            .await;
+
+        let request = build_http_request(&client, service).unwrap();
+        let response = client.execute(request.build().unwrap()).await.unwrap();
+
+        let rs = handle_http_response("test", &service, response, &metrics, counters)
+            .await
+            .unwrap();
+        // assert rs is false
+        assert!(!rs);
+
+        // Fetch updated values
+        let updated_status = metrics
+            .epazote_status
+            .get_metric_with_label_values(&["test"])
+            .map(|m| m.get())
+            .unwrap_or(0);
+
+        assert_eq!(
+            updated_status, 0,
+            "Service status should be 0 after a failed request"
+        );
     }
 }

@@ -3,6 +3,7 @@ Changelog
 
 ## 0.10.0
 - `epazote_` namespace/prefix for metrics.
+- set service status to `0` apart incrementing the failure counter.
 
 ## 0.9.0
 - implemented `http` in `if_not` to call a URL in case of failure.

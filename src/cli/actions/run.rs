@@ -135,6 +135,11 @@ async fn run_service(
                     .with_label_values(&[&service_name])
                     .inc();
 
+                metrics
+                    .epazote_status
+                    .with_label_values(&[&service_name])
+                    .set(0);
+
                 error!("Error scanning service '{}': {}", &service_name, e);
             }
         }
