@@ -131,7 +131,7 @@ async fn run_service(
             Err(e) => {
                 // Increment failure counter
                 metrics
-                    .service_failures_total
+                    .epazote_failures_total
                     .with_label_values(&[&service_name])
                     .inc();
 
@@ -171,7 +171,7 @@ async fn scan_service(
             // Record response time
             let response_time = start_time.elapsed().as_secs_f64();
             metrics
-                .service_response_time
+                .epazote_response_time
                 .with_label_values(&[service_name])
                 .observe(response_time);
 

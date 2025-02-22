@@ -95,7 +95,7 @@ pub async fn check_ssl_certificate(
 
     // Update metrics
     metrics
-        .service_ssl_cert_expiry_seconds
+        .epazote_ssl_cert_expiry_seconds
         .with_label_values(&[service_name])
         .set(remaining.try_into()?);
 

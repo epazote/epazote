@@ -8,54 +8,54 @@ use tracing::{debug, error};
 // Metrics struct to hold our Prometheus metrics
 pub struct ServiceMetrics {
     registry: Arc<Registry>,
-    pub service_status: IntGaugeVec,           // Current state
-    pub service_failures_total: IntCounterVec, // Cumulative failures
-    pub service_response_time: HistogramVec,
-    pub service_ssl_cert_expiry_seconds: IntGaugeVec,
+    pub epazote_status: IntGaugeVec,           // Current state
+    pub epazote_failures_total: IntCounterVec, // Cumulative failures
+    pub epazote_response_time: HistogramVec,
+    pub epazote_ssl_cert_expiry_seconds: IntGaugeVec,
 }
 
 impl ServiceMetrics {
     pub fn new() -> Result<Self> {
         let registry = Arc::new(Registry::new());
 
-        let service_status = IntGaugeVec::new(
-            opts!("service_status", "Service status (1 = OK, 0 = FAIL)"),
+        let epazote_status = IntGaugeVec::new(
+            opts!("epazote_status", "Service status (1 = OK, 0 = FAIL)"),
             &["service_name"],
         )?;
 
-        let service_failures_total = IntCounterVec::new(
-            opts!("service_failures_total", "Total number of service failures"),
+        let epazote_failures_total = IntCounterVec::new(
+            opts!("epazote_failures_total", "Total number of service failures"),
             &["service_name"],
         )?;
 
-        let service_response_time = HistogramVec::new(
+        let epazote_response_time = HistogramVec::new(
             histogram_opts!(
-                "service_response_time_seconds",
+                "epazote_response_time_seconds",
                 "Service response time in seconds"
             ),
             &["service_name"],
         )?;
 
-        let service_ssl_cert_expiry_seconds = IntGaugeVec::new(
+        let epazote_ssl_cert_expiry_seconds = IntGaugeVec::new(
             opts!(
-                "service_ssl_cert_expiry_seconds",
+                "epazote_ssl_cert_expiry_seconds",
                 "Number of seconds until SSL certificate expiration"
             ),
             &["service_name"],
         )?;
 
         // Register metrics with the registry
-        registry.register(Box::new(service_status.clone()))?;
-        registry.register(Box::new(service_failures_total.clone()))?;
-        registry.register(Box::new(service_response_time.clone()))?;
-        registry.register(Box::new(service_ssl_cert_expiry_seconds.clone()))?;
+        registry.register(Box::new(epazote_status.clone()))?;
+        registry.register(Box::new(epazote_failures_total.clone()))?;
+        registry.register(Box::new(epazote_response_time.clone()))?;
+        registry.register(Box::new(epazote_ssl_cert_expiry_seconds.clone()))?;
 
         Ok(Self {
             registry,
-            service_status,
-            service_failures_total,
-            service_response_time,
-            service_ssl_cert_expiry_seconds,
+            epazote_status,
+            epazote_failures_total,
+            epazote_response_time,
+            epazote_ssl_cert_expiry_seconds,
         })
     }
 }

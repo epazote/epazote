@@ -83,7 +83,7 @@ pub async fn handle_http_response(
     // Update metrics
     // Set service status to OK (1) if both status and body match
     metrics
-        .service_status
+        .epazote_status
         .with_label_values(&[service_name])
         .set(if is_match { 1 } else { 0 });
 

@@ -1,6 +1,9 @@
 Changelog
 =========
 
+## 0.10.0
+- `epazote_` namespace/prefix for metrics.
+
 ## 0.9.0
 - implemented `http` in `if_not` to call a URL in case of failure.
 
