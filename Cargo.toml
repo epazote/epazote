@@ -17,19 +17,20 @@ anyhow = "1"
 axum = "0.8.1"
 chrono = "0.4"
 clap = "4.5"
-futures = "0.3.31"
+futures = "0.3"
+futures-util = "0.3"
 ignore = "0.4"
 openssl = { version = "0.10", optional = true, features = ["vendored"] }
 opentelemetry = "0.28"
 opentelemetry-otlp = { version = "0.28", features = ["grpc-tonic", "tls"] }
 opentelemetry_sdk = { version = "0.28", features = ["rt-tokio"] }
 prometheus = "0.13.4"
-regex = "1.11.1"
-reqwest = { version = "0.12", features = ["json"] }
+regex = "1.11"
+reqwest = { version = "0.12", features = ["json", "stream"] }
 rustls = "0.23"
-rustls-native-certs = "0.8.1"
+rustls-native-certs = "0.8"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1.0.138"
+serde_json = "1.0"
 serde_yaml = "0.9"
 strum = { version = "0.27", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }

@@ -6,6 +6,7 @@ use crate::cli::{
     config::{BodyType, ServiceDetails},
 };
 use anyhow::{anyhow, Result};
+use futures_util::StreamExt;
 use regex::Regex;
 use reqwest::{Client, Method, RequestBuilder};
 use std::{collections::HashMap, sync::Arc};
@@ -55,6 +56,7 @@ pub async fn handle_http_response(
     let status = response.status();
     let headers = response.headers().clone();
 
+    // Check if the response status matches expected status
     let status_matches = status.as_u16() == service_details.expect.status;
 
     // Check if the response body matches expected criteria
@@ -67,14 +69,72 @@ pub async fn handle_http_response(
             e
         })?;
 
-        response.text().await.map_or_else(
-            |e| {
-                error!("Failed to read response body: {}", e);
-                false
-            },
-            |body_text| regex.is_match(&body_text),
-        )
+        let mut buffer = String::new(); // Accumulate response body here
+        let mut stream = response.bytes_stream(); // Stream of response body bytes
+
+        // Get max_bytes limit if set; otherwise, allow unlimited size
+        let max_bytes = service_details.max_bytes.unwrap_or(usize::MAX); // Default to no limit
+        let mut total_bytes_read = 0; // keep track of total bytes read
+
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(bytes) => {
+                    let chunk_size = bytes.len();
+                    let remaining_bytes = max_bytes.saturating_sub(total_bytes_read);
+
+                    debug!(
+                        "Read chunk of size: {}, remaining bytes: {}, total bytes read: {}",
+                        chunk_size, remaining_bytes, total_bytes_read
+                    );
+
+                    if remaining_bytes == 0 {
+                        break; // Stop reading if max_bytes reached
+                    }
+
+                    // Truncate the chunk if it exceeds remaining bytes limit
+                    let limited_chunk = if chunk_size > remaining_bytes {
+                        &bytes[..remaining_bytes]
+                    } else {
+                        &bytes
+                    };
+
+                    // Convert bytes to string and append to buffer
+                    if let Ok(text) = std::str::from_utf8(limited_chunk) {
+                        buffer.push_str(text);
+                    }
+
+                    // Update total bytes read
+                    total_bytes_read += limited_chunk.len();
+
+                    // Check regex on accumulated buffer
+                    if regex.is_match(&buffer) {
+                        debug!(
+                            "Match found in response body: {}, total bytes read: {}",
+                            buffer, total_bytes_read
+                        );
+                        return Ok(true); // Match found, stop reading
+                    }
+
+                    // Stop reading if max_bytes is reached
+                    if total_bytes_read >= max_bytes {
+                        debug!(
+                            "Max bytes limit reached: {}, total bytes read: {}, body: {}",
+                            max_bytes, total_bytes_read, buffer
+                        );
+                        break; // Stop reading if max_bytes reached
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to read chunk: {}", e);
+                    return Ok(false);
+                }
+            }
+        }
+
+        // No match found
+        false
     } else {
+        // No expected body means body check always passes
         true
     };
 
@@ -170,6 +230,18 @@ mod tests {
         Config::new(tmp_file.path().to_path_buf()).unwrap()
     }
 
+    // helper to generate a string of numbers
+    fn generate_numbers(limit: usize, start: usize) -> String {
+        let mut result = String::new();
+        let mut num = start;
+        while result.len() + 2 < limit {
+            // Approximate space for "N "
+            result.push_str(&format!("{} ", num));
+            num += 1;
+        }
+        result
+    }
+
     #[test]
     fn test_generate_regex_pattern() {
         // Normal input should be escaped and wrapped in ".* .*"
@@ -223,7 +295,7 @@ mod tests {
             },
             follow_redirects: Some(true),
             headers: None,
-            read_limit: None,
+            max_bytes: None,
             test: None,
             timeout: Duration::from_secs(5),
             url: Some(format!("{}/health", server.url())),
@@ -777,5 +849,185 @@ services:
         .unwrap();
 
         assert!(rs3);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_expect_body_max_bytes_20() {
+        // Start mock server
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r#"
+---
+services:
+  test-max_bytes:
+    url: {}/test
+    every: 30s
+    expect:
+      status: 200
+      body: "34917f37-72b9-403f-887c-20c5e93b7173"
+    max_bytes: 20
+    "#,
+            mock_url
+        );
+
+        let config = create_config(&yaml);
+        let service = config.services.get("test-max_bytes").unwrap();
+
+        let _ = env_logger::try_init();
+        let _mock = server
+            .mock("GET", "/test")
+            .with_body("hello world 0123456789 34917f37-72b9-403f-887c-20c5e93b7173")
+            .match_header(
+                "User-Agent",
+                mockito::Matcher::Regex("epazote.*".to_string()),
+            )
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let (builder, _client_config) = build_client(service).unwrap();
+        let client = builder.build().unwrap();
+        let request = build_http_request(&client, service).unwrap();
+        let response = client.execute(request.build().unwrap()).await.unwrap();
+        let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+
+        // print body
+        let rs = handle_http_response(
+            "test-max_bytes",
+            service,
+            response,
+            &ServiceMetrics::new().unwrap(),
+            Arc::clone(&counters),
+        )
+        .await
+        .unwrap();
+
+        assert!(!rs);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_expect_body_max_bytes_64k() {
+        // Start mock server
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r#"
+---
+services:
+  test-max_bytes:
+    url: {}/test
+    every: 30s
+    expect:
+      status: 200
+      body: "34917f37-72b9-403f-887c-20c5e93b7173"
+    max_bytes: 64000
+    "#,
+            mock_url
+        );
+
+        let response_body = format!(
+            "{}{} --- FIN",
+            generate_numbers(64 * 1024, 0),
+            "34917f37-72b9-403f-887c-20c5e93b7173"
+        );
+
+        let config = create_config(&yaml);
+        let service = config.services.get("test-max_bytes").unwrap();
+
+        let _ = env_logger::try_init();
+        let _mock = server
+            .mock("GET", "/test")
+            .with_body(response_body)
+            .match_header(
+                "User-Agent",
+                mockito::Matcher::Regex("epazote.*".to_string()),
+            )
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let (builder, _client_config) = build_client(service).unwrap();
+        let client = builder.build().unwrap();
+        let request = build_http_request(&client, service).unwrap();
+        let response = client.execute(request.build().unwrap()).await.unwrap();
+        let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+
+        // print body
+        let rs = handle_http_response(
+            "test-max_bytes",
+            service,
+            response,
+            &ServiceMetrics::new().unwrap(),
+            Arc::clone(&counters),
+        )
+        .await
+        .unwrap();
+
+        assert!(!rs);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_expect_body_read_in_chunks() {
+        // Start mock server
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r#"
+---
+services:
+  test-max_bytes:
+    url: {}/test
+    every: 30s
+    expect:
+      status: 200
+      body: "34917f37-72b9-403f-887c-20c5e93b7173"
+    "#,
+            mock_url
+        );
+
+        let response_body = format!(
+            "{} --- {} --- {} --- FIN",
+            generate_numbers(1024, 0),
+            "34917f37-72b9-403f-887c-20c5e93b7173",
+            generate_numbers(128 * 1024, 0)
+        );
+
+        let config = create_config(&yaml);
+        let service = config.services.get("test-max_bytes").unwrap();
+
+        let _ = env_logger::try_init();
+        let _mock = server
+            .mock("GET", "/test")
+            .with_body(response_body)
+            .match_header(
+                "User-Agent",
+                mockito::Matcher::Regex("epazote.*".to_string()),
+            )
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let (builder, _client_config) = build_client(service).unwrap();
+        let client = builder.build().unwrap();
+        let request = build_http_request(&client, service).unwrap();
+        let response = client.execute(request.build().unwrap()).await.unwrap();
+        let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+
+        // print body
+        let rs = handle_http_response(
+            "test-max_bytes",
+            service,
+            response,
+            &ServiceMetrics::new().unwrap(),
+            Arc::clone(&counters),
+        )
+        .await
+        .unwrap();
+
+        assert!(rs);
     }
 }

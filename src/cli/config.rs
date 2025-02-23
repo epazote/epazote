@@ -106,8 +106,8 @@ pub struct ServiceDetails {
 
     pub headers: Option<HashMap<String, String>>,
 
-    #[serde(rename = "read_limit")]
-    pub read_limit: Option<i64>,
+    #[serde(rename = "max_bytes")]
+    pub max_bytes: Option<usize>,
 
     pub test: Option<String>,
 

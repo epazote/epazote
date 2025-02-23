@@ -1,6 +1,10 @@
 Changelog
 =========
 
+## 0.11.0
+- `max_bytes` to limit the size of the response body.
+- when using `expect:body` the response body is processed in chunks, instead of loading the entire body.
+
 ## 0.10.0
 - `epazote_` namespace/prefix for metrics.
 - set service status to `0` apart incrementing the failure counter.
