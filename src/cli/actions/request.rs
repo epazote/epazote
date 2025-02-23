@@ -223,9 +223,6 @@ mod tests {
             },
             follow_redirects: Some(true),
             headers: None,
-            if_header: None,
-            if_status: None,
-            insecure: None,
             read_limit: None,
             test: None,
             timeout: Duration::from_secs(5),
@@ -671,5 +668,114 @@ services:
             *counters_locked.get("test-stop").unwrap_or(&0)
         };
         assert_eq!(count2, 2, "Counter should be 1 after first attempt");
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_expect_body_regex_example() {
+        // Start mock server
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r#"
+---
+services:
+  test-stop:
+    url: {}/test
+    every: 30s
+    expect:
+      status: 200
+      body: r"success|ok"
+    "#,
+            mock_url
+        );
+
+        let config = create_config(&yaml);
+        let service = config.services.get("test-stop").unwrap();
+
+        let _ = env_logger::try_init();
+        let mock = server
+            .mock("GET", "/test")
+            .with_body("success")
+            .match_header(
+                "User-Agent",
+                mockito::Matcher::Regex("epazote.*".to_string()),
+            )
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let (builder, _client_config) = build_client(service).unwrap();
+        let client = builder.build().unwrap();
+        let request = build_http_request(&client, service).unwrap();
+        let response = client.execute(request.build().unwrap()).await.unwrap();
+
+        let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+
+        let rs1 = handle_http_response(
+            "test-stop",
+            service,
+            response,
+            &ServiceMetrics::new().unwrap(),
+            Arc::clone(&counters),
+        )
+        .await
+        .unwrap();
+
+        assert!(rs1);
+
+        mock.remove();
+        let _mock = server
+            .mock("GET", "/test")
+            .with_body("-- error --")
+            .match_header(
+                "User-Agent",
+                mockito::Matcher::Regex("epazote.*".to_string()),
+            )
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let request = build_http_request(&client, service).unwrap();
+        let response = client.execute(request.build().unwrap()).await.unwrap();
+
+        let rs2 = handle_http_response(
+            "test-stop",
+            service,
+            response,
+            &ServiceMetrics::new().unwrap(),
+            Arc::clone(&counters),
+        )
+        .await
+        .unwrap();
+
+        assert!(!rs2);
+
+        mock.remove();
+        let _mock = server
+            .mock("GET", "/test")
+            .with_body("-- ok --")
+            .match_header(
+                "User-Agent",
+                mockito::Matcher::Regex("epazote.*".to_string()),
+            )
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let request = build_http_request(&client, service).unwrap();
+        let response = client.execute(request.build().unwrap()).await.unwrap();
+
+        let rs3 = handle_http_response(
+            "test-stop",
+            service,
+            response,
+            &ServiceMetrics::new().unwrap(),
+            Arc::clone(&counters),
+        )
+        .await
+        .unwrap();
+
+        assert!(rs3);
     }
 }

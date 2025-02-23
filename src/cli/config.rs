@@ -101,16 +101,10 @@ pub struct ServiceDetails {
     pub every: Duration,
 
     pub expect: Expect,
+
     pub follow_redirects: Option<bool>,
+
     pub headers: Option<HashMap<String, String>>,
-
-    #[serde(rename = "if_header")]
-    pub if_header: Option<HashMap<String, Action>>,
-
-    #[serde(rename = "if_status")]
-    pub if_status: Option<HashMap<String, Action>>,
-
-    pub insecure: Option<bool>,
 
     #[serde(rename = "read_limit")]
     pub read_limit: Option<i64>,
@@ -252,9 +246,6 @@ services:
 
         // follow_redirects is not set
         assert_eq!(config.services["test"].follow_redirects, None);
-
-        // insecure is not set
-        assert_eq!(config.services["test"].insecure, None);
     }
 
     #[test]
