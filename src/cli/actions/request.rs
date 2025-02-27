@@ -5,7 +5,7 @@ use crate::cli::{
     },
     config::{BodyType, ServiceDetails},
 };
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
 use regex::Regex;
 use reqwest::{Client, Method, RequestBuilder};
@@ -263,15 +263,15 @@ mod tests {
         // Standard input should be escaped
         let pattern = generate_regex_pattern("hello world").unwrap();
         assert_eq!(pattern.as_str(), r".*hello world.*"); // Space should be escaped
-                                                          //
-                                                          // Ensure regex matching works
+        //
+        // Ensure regex matching works
         assert!(pattern.is_match("this is a hello world test"));
         assert!(!pattern.is_match("this is a goodbye test"));
 
         // the . should be escaped
         let pattern = generate_regex_pattern("hello.world").unwrap();
         assert_eq!(pattern.as_str(), r".*hello\.world.*"); // Space should be escaped
-                                                           //
+        //
         let pattern = generate_regex_pattern("a+b*").unwrap();
         assert_eq!(pattern.as_str(), r".*a\+b\*.*"); // Space should be escaped
     }

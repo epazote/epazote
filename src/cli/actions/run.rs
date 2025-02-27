@@ -1,22 +1,22 @@
 use crate::cli::{
     actions::{
+        Action,
         client::build_client,
         execute_fallback_command, execute_fallback_http,
-        metrics::{metrics_server, ServiceMetrics},
+        metrics::{ServiceMetrics, metrics_server},
         request::{build_http_request, handle_http_response},
         should_continue_fallback,
         ssl::check_ssl_certificate,
-        Action,
     },
     config::{Config, ServiceDetails},
 };
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use reqwest::Client;
 use rustls::crypto::CryptoProvider;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::{
     sync::Mutex,
-    time::{interval, Instant},
+    time::{Instant, interval},
 };
 use tracing::{debug, error, info, instrument};
 

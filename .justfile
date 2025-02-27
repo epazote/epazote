@@ -1,4 +1,4 @@
-test: build-bin clippy
+test: build-bin clippy fmt
   cargo test
 
 build-bin:
@@ -6,6 +6,9 @@ build-bin:
 
 clippy:
   cargo clippy --all -- -W clippy::all -W clippy::nursery -D warnings
+
+fmt:
+  cargo fmt --all -- --check
 
 coverage:
   CARGO_INCREMENTAL=0 RUSTFLAGS='-Cinstrument-coverage' LLVM_PROFILE_FILE='coverage-%p-%m.profraw' cargo test

@@ -6,7 +6,7 @@ pub mod ssl;
 
 use crate::cli::actions::client::APP_USER_AGENT;
 use crate::cli::config;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::{collections::HashMap, env, path::PathBuf, sync::Arc};
 use tokio::{process::Command, sync::Mutex};
 use tracing::debug;

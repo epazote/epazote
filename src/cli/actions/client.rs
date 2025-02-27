@@ -1,8 +1,8 @@
 use crate::cli::config::ServiceDetails;
 use anyhow::Result;
 use reqwest::{
-    header::{HeaderMap, HeaderName, HeaderValue},
     Client, ClientBuilder,
+    header::{HeaderMap, HeaderName, HeaderValue},
 };
 
 pub static APP_USER_AGENT: &str =
