@@ -1,6 +1,6 @@
-use anyhow::{Result, anyhow};
-use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
-use prometheus::{HistogramVec, IntCounterVec, IntGaugeVec, Registry, histogram_opts, opts};
+use anyhow::{anyhow, Result};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Router};
+use prometheus::{histogram_opts, opts, HistogramVec, IntCounterVec, IntGaugeVec, Registry};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{debug, error};

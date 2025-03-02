@@ -1,6 +1,9 @@
 Changelog
 =========
 
+## 3.0.0
+- FreeBSD port `sysutils/epazote/`
+
 ## 0.11.0
 - `max_bytes` to limit the size of the response body.
 - when using `expect:body` the response body is processed in chunks, instead of loading the entire body.

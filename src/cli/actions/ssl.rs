@@ -1,7 +1,7 @@
 use crate::cli::actions::metrics::ServiceMetrics;
 use anyhow::{Context, Result};
-use rustls::ClientConfig;
 use rustls::pki_types::ServerName;
+use rustls::ClientConfig;
 use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},

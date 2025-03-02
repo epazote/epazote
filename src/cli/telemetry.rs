@@ -1,13 +1,13 @@
 use anyhow::Result;
-use opentelemetry::{KeyValue, global, trace::TracerProvider as _};
+use opentelemetry::{global, trace::TracerProvider as _, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
-    Resource,
     trace::{SdkTracerProvider, Tracer},
+    Resource,
 };
 use std::time::Duration;
 use tracing::Level;
-use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
+use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter, Registry};
 
 fn init_tracer() -> Result<Tracer> {
     let exporter = opentelemetry_otlp::SpanExporter::builder()
