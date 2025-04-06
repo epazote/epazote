@@ -10,13 +10,13 @@ use tracing::Level;
 use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter, Registry};
 
 fn init_tracer() -> Result<Tracer> {
-    let exporter = opentelemetry_otlp::SpanExporter::builder()
-        .with_tonic()
-        .with_timeout(Duration::from_secs(3))
-        .build()?;
-
     let tracer_provider = SdkTracerProvider::builder()
-        .with_batch_exporter(exporter)
+        .with_batch_exporter(
+            opentelemetry_otlp::SpanExporter::builder()
+                .with_tonic()
+                .with_timeout(Duration::from_secs(3))
+                .build()?,
+        )
         .with_resource(
             Resource::builder_empty()
                 .with_attributes(vec![
