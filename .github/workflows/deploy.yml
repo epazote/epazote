@@ -49,32 +49,48 @@ jobs:
       - run: sudo apt -y install musl-dev musl-tools
         if: matrix.build == 'linux'
 
-      - name: Install `cargo-generate-rpm`
+      - name: Install `cargo-generate-rpm` and `cargo-deb`
         if: matrix.build == 'linux'
-        run: cargo install cargo-generate-rpm
-
-      - run: choco install openssl
-        if: matrix.build == 'windows'
-
-      - run: echo 'OPENSSL_DIR=C:\Program Files\OpenSSL-Win64' | Out-File -FilePath
-          $env:GITHUB_ENV -Append
-        if: matrix.build == 'windows'
+        run: |
+          cargo install cargo-generate-rpm
+          cargo install cargo-deb
 
       - name: Build Linux
         run: |
-          cargo build --release --locked --target ${{ matrix.target }} --features "openssl/vendored"
+          cargo build --release --locked --target ${{ matrix.target }}
         if: matrix.build == 'linux'
 
-      - name: Generate RPM
+      - name: Generate RPM and DEB
         if: matrix.build == 'linux'
         run: |
           ls -alR target/${{ matrix.target }}/release/epazote
+          # Create target/release directory if it doesn't exist (it might not if only cross-compiled)
+          mkdir -p target/release
           cp target/${{ matrix.target }}/release/epazote ./target/release/epazote
           strip -s ./target/release/epazote
+
+          # RPM
           cargo generate-rpm
-          ls -alR target/generate-rpm  # Check where the RPM is generated
+          ls -alR target/generate-rpm
           RPM_PATH=$(find target/generate-rpm/ -name "*.rpm" -print -quit)
           echo "RPM_ASSET=$RPM_PATH" >> $GITHUB_ENV
+
+          # DEB
+          # We use --no-build because we already built it.
+          # We don't pass --target to cargo deb because it might try to look in target/{target}/release
+          # but our Cargo.toml points to target/release/epazote.
+          # Actually, cargo-deb defaults might override Cargo.toml if we pass --target?
+          # Let's try running it simply since we moved the binary to target/release/epazote where Cargo.toml expects it.
+          # But cargo-deb calculates architecture from target.
+          # If we are on x86_64 linux and target is x86_64-unknown-linux-musl, cargo deb might default to gnu or something?
+          # Ideally we tell cargo deb the architecture.
+          cargo deb --no-build --target ${{ matrix.target }}
+
+          # Find the generated deb
+          # It usually goes to target/{target}/debian/
+          ls -alR target
+          DEB_PATH=$(find target -name "*.deb" -print -quit)
+          echo "DEB_ASSET=$DEB_PATH" >> $GITHUB_ENV
 
       - name: Build
         run: |
@@ -104,11 +120,12 @@ jobs:
 
       - name: Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: |-
             ${{ env.ASSET }}
             ${{ env.RPM_ASSET }}
+            ${{ env.DEB_ASSET }}
 
   publish:
     name: Publish
