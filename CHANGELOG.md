@@ -1,7 +1,7 @@
 Changelog
 =========
 
-## 3.0.2
+## 3.0.3
 - Rust 2024 edition update.
 - Switch from OpenSSL to Rustls.
 - Updated dependencies.
