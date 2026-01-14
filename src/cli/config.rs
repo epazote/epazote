@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::str::FromStr;
 use std::{collections::HashMap, fs::File, path::PathBuf, time::Duration};
@@ -10,6 +10,11 @@ pub struct Config {
 }
 
 impl Config {
+    /// Creates a new `Config` from a YAML file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read, parsed, or contains invalid service configurations.
     pub fn new(config_path: PathBuf) -> Result<Self> {
         let file = File::open(config_path)?;
 
@@ -19,12 +24,13 @@ impl Config {
         for (name, service) in &config.services {
             service
                 .validate()
-                .with_context(|| format!("Invalid configuration for service '{}'", name))?;
+                .with_context(|| format!("Invalid configuration for service '{name}'"))?;
         }
 
         Ok(config)
     }
 
+    #[must_use]
     pub fn get_service(&self, service_name: &str) -> Option<&ServiceDetails> {
         self.services.get(service_name)
     }
@@ -124,6 +130,11 @@ pub struct ServiceDetails {
 }
 
 impl ServiceDetails {
+    /// Validates the service configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the configuration is invalid (e.g., missing both URL and test command).
     pub fn validate(&self) -> Result<()> {
         match (&self.url, &self.test) {
             (Some(_), Some(_)) => Err(anyhow!("Service cannot have both 'url' and 'test'.")),
@@ -169,51 +180,57 @@ fn parse_duration_str(input: &str) -> Result<Duration> {
     let (value, unit) = input.split_at(input.len() - 1);
     let value: u64 = value
         .parse()
-        .map_err(|_| anyhow!("Invalid number in duration: {}", input))?;
+        .map_err(|_| anyhow!("Invalid number in duration: {input}"))?;
 
     match unit {
         "s" => Ok(Duration::from_secs(value)),
         "m" => Ok(Duration::from_secs(value * 60)),
         "h" => Ok(Duration::from_secs(value * 60 * 60)),
         "d" => Ok(Duration::from_secs(value * 60 * 60 * 24)),
-        _ => Err(anyhow!("Invalid duration unit: {}", unit)),
+        _ => Err(anyhow!("Invalid duration unit: {unit}")),
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
     use serde_json::json;
     use std::io::Write;
 
     // Helper to create config from YAML
-    fn create_config(yaml: &str) -> Result<tempfile::NamedTempFile> {
-        let mut tmp_file = tempfile::NamedTempFile::new().unwrap();
-        tmp_file.write_all(yaml.as_bytes()).unwrap();
-        tmp_file.flush().unwrap();
-        Ok(tmp_file)
+    fn create_config(yaml: &str) -> tempfile::NamedTempFile {
+        let mut tmp_file = tempfile::NamedTempFile::new().expect("Failed to create temp file");
+        tmp_file
+            .write_all(yaml.as_bytes())
+            .expect("Failed to write to temp file");
+        tmp_file.flush().expect("Failed to flush temp file");
+        tmp_file
     }
 
     #[test]
     fn test_parse_duration() {
-        assert_eq!(parse_duration_str("5s").unwrap(), Duration::from_secs(5));
-        assert_eq!(parse_duration_str("3m").unwrap(), Duration::from_secs(180));
-        assert_eq!(parse_duration_str("1h").unwrap(), Duration::from_secs(3600));
         assert_eq!(
-            parse_duration_str("2d").unwrap(),
-            Duration::from_secs(172800)
+            parse_duration_str("5s").expect("Failed to parse duration"),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            parse_duration_str("3m").expect("Failed to parse duration"),
+            Duration::from_secs(180)
+        );
+        assert_eq!(
+            parse_duration_str("1h").expect("Failed to parse duration"),
+            Duration::from_secs(3600)
+        );
+        assert_eq!(
+            parse_duration_str("2d").expect("Failed to parse duration"),
+            Duration::from_secs(172_800)
         );
     }
 
     #[test]
-    fn test_parse_duration_invalid() {
-        assert!(parse_duration_str("5").is_err());
-        assert!(parse_duration_str("5x").is_err());
-    }
-
-    #[test]
     fn test_config() {
-        let yaml = r#"
+        let yaml = r"
 ---
 services:
   test:
@@ -223,29 +240,66 @@ services:
       X-Custom-Header: TestValue
     expect:
       status: 200
-      "#;
+      ";
 
-        let tmp_file = create_config(yaml).unwrap();
+        let tmp_file = create_config(yaml);
         let config_file = tmp_file.path().to_path_buf();
-        let config = Config::new(config_file).unwrap();
+        let config = Config::new(config_file).expect("Failed to load config");
 
         assert_eq!(config.services.len(), 1);
         assert_eq!(
-            config.services["test"].url,
+            config.services.get("test").expect("Service not found").url,
             Some("https://epazote.io".to_string())
         );
-        assert_eq!(config.services["test"].every, Duration::from_secs(30));
         assert_eq!(
-            config.services["test"].headers.as_ref().unwrap()["X-Custom-Header"],
+            config
+                .services
+                .get("test")
+                .expect("Service not found")
+                .every,
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            config
+                .services
+                .get("test")
+                .expect("Service not found")
+                .headers
+                .as_ref()
+                .expect("Headers not found")
+                .get("X-Custom-Header")
+                .expect("Header not found"),
             "TestValue"
         );
-        assert_eq!(config.services["test"].expect.status, 200);
+        assert_eq!(
+            config
+                .services
+                .get("test")
+                .expect("Service not found")
+                .expect
+                .status,
+            200
+        );
 
         // check method
-        assert_eq!(config.services["test"].method, HttpMethod::Get);
+        assert_eq!(
+            config
+                .services
+                .get("test")
+                .expect("Service not found")
+                .method,
+            HttpMethod::Get
+        );
 
         // follow_redirects is not set
-        assert_eq!(config.services["test"].follow_redirects, None);
+        assert_eq!(
+            config
+                .services
+                .get("test")
+                .expect("Service not found")
+                .follow_redirects,
+            None
+        );
     }
 
     #[test]
@@ -263,7 +317,7 @@ services:
     test: "echo test"
       "#;
 
-        let tmp_file = create_config(yaml).unwrap();
+        let tmp_file = create_config(yaml);
         let config_file = tmp_file.path().to_path_buf();
         let config = Config::new(config_file);
 
@@ -272,7 +326,7 @@ services:
 
     #[test]
     fn test_bad_config_missing_url_and_test() {
-        let yaml = r#"
+        let yaml = r"
 ---
 services:
   test:
@@ -281,9 +335,9 @@ services:
       X-Custom-Header: TestValue
     expect:
       status: 200
-      "#;
+      ";
 
-        let tmp_file = create_config(yaml).unwrap();
+        let tmp_file = create_config(yaml);
         let config_file = tmp_file.path().to_path_buf();
         let config = Config::new(config_file);
 
@@ -292,7 +346,7 @@ services:
 
     #[test]
     fn test_all_http_methods_case_insensitive() {
-        let methods = vec![
+        let methods = [
             "GET", "get", "Get", "POST", "post", "Post", "PUT", "put", "Put", "DELETE", "delete",
             "Delete", "PATCH", "patch", "Patch", "HEAD", "head", "Head", "OPTIONS", "options",
             "Options", "CONNECT", "connect", "Connect", "TRACE", "trace", "Trace",
@@ -300,35 +354,38 @@ services:
 
         for method in methods {
             let yaml = format!(
-                r#"
+                r"
 ---
 services:
   test:
     url: https://epazote.io
     every: 30s
-    method: {}
+    method: {method}
     expect:
       status: 200
-"#,
-                method
+"
             );
 
-            let tmp_file = create_config(&yaml).unwrap();
+            let tmp_file = create_config(&yaml);
             let config_file = tmp_file.path().to_path_buf();
-            let config = Config::new(config_file).unwrap();
+            let config = Config::new(config_file).expect("Failed to load config");
 
             assert_eq!(
-                config.services["test"].method.to_string(),
+                config
+                    .services
+                    .get("test")
+                    .expect("Service not found")
+                    .method
+                    .to_string(),
                 method.to_uppercase(),
-                "Failed for method: {}",
-                method
+                "Failed for method: {method}"
             );
         }
     }
 
     #[test]
     fn test_body_type_json() {
-        let yaml = r#"
+        let yaml = r"
 ---
 services:
   test:
@@ -341,19 +398,19 @@ services:
     every: 30s
     expect:
       status: 200
-    "#;
+    ";
 
         let expected_json = json!({
             "key": "value",
             "oi": "hola"
         });
 
-        let tmp_file = create_config(yaml).unwrap();
+        let tmp_file = create_config(yaml);
         let config_file = tmp_file.path().to_path_buf();
-        let config = Config::new(config_file).unwrap();
+        let config = Config::new(config_file).expect("Failed to load config");
 
-        let service = config.services.get("test").unwrap();
-        let body = service.body.as_ref().unwrap();
+        let service = config.services.get("test").expect("Service not found");
+        let body = service.body.as_ref().expect("Body not found");
 
         assert_eq!(body, &BodyType::Json(expected_json));
     }

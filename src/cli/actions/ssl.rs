@@ -1,7 +1,7 @@
 use crate::cli::actions::metrics::ServiceMetrics;
 use anyhow::{Context, Result};
-use rustls::pki_types::ServerName;
 use rustls::ClientConfig;
+use rustls::pki_types::ServerName;
 use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -41,7 +41,7 @@ async fn get_cert_expiration_time(host: String, port: u16) -> Result<u64> {
     let connector = TlsConnector::from(Arc::new(config));
 
     // Establish TCP connection
-    let addr = format!("{}:{}", host, port);
+    let addr = format!("{host}:{port}");
     let stream = TcpStream::connect(&addr)
         .await
         .context("Failed to establish TCP connection")?;
@@ -68,6 +68,7 @@ async fn get_cert_expiration_time(host: String, port: u16) -> Result<u64> {
         parse_x509_certificate(cert.as_ref()).context("Failed to parse X.509 certificate")?;
 
     // Calculate remaining seconds
+    #[allow(clippy::cast_sign_loss)]
     let not_after = parsed_cert.validity().not_after.timestamp() as u64;
 
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
@@ -85,6 +86,10 @@ async fn get_cert_expiration_time(host: String, port: u16) -> Result<u64> {
 }
 
 /// Checks the SSL certificate expiration for a given URL
+///
+/// # Errors
+///
+/// Returns an error if the URL is invalid, the host cannot be reached, or the certificate is invalid.
 pub async fn check_ssl_certificate(
     url: &str,
     service_name: &str,
@@ -103,6 +108,7 @@ pub async fn check_ssl_certificate(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use anyhow::Result;

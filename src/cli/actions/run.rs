@@ -1,22 +1,22 @@
 use crate::cli::{
     actions::{
+        Action,
         client::build_client,
         execute_fallback_command, execute_fallback_http,
-        metrics::{metrics_server, ServiceMetrics},
+        metrics::{ServiceMetrics, metrics_server},
         request::{build_http_request, handle_http_response},
         should_continue_fallback,
         ssl::check_ssl_certificate,
-        Action,
     },
     config::{Config, ServiceDetails},
 };
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use reqwest::Client;
 use rustls::crypto::CryptoProvider;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::{
     sync::Mutex,
-    time::{interval, Instant},
+    time::{Instant, interval},
 };
 use tracing::{debug, error, info, instrument};
 
@@ -26,11 +26,15 @@ enum ServiceAction {
 }
 
 /// Handle the create action
+///
+/// # Errors
+///
+/// Returns an error if the configuration is invalid or the metrics server fails to start.
 #[instrument(skip(action))]
 pub async fn handle(action: Action) -> Result<()> {
     // rustls requires a cryptographic provider
     CryptoProvider::install_default(rustls::crypto::ring::default_provider())
-        .map_err(|e| anyhow!("Failed to install default crypto provider: {:?}", e))?;
+        .map_err(|e| anyhow!("Failed to install default crypto provider: {e:?}"))?;
 
     let Action::Run { config, port } = action;
 
@@ -127,7 +131,7 @@ async fn run_service(
         )
         .await
         {
-            Ok(_) => (),
+            Ok(()) => (),
             Err(e) => {
                 // Increment failure counter
                 metrics
@@ -146,7 +150,7 @@ async fn run_service(
     }
 }
 
-/// scan_service performs the actual scan of the service
+/// `scan_service` performs the actual scan of the service
 async fn scan_service(
     service_name: &str,
     service_details: &ServiceDetails,
@@ -190,22 +194,21 @@ async fn scan_service(
 
             let exit_status = execute_fallback_command(command).await.unwrap_or(1);
 
-            if exit_status != service_details.expect.status as i32 {
-                if let Some(action) = &service_details.expect.if_not {
-                    if should_continue_fallback(service_name, &counters, action).await {
-                        if let Some(cmd) = &action.cmd {
-                            let exit_code = execute_fallback_command(cmd).await?;
-                            debug!("Fallback action executed with exit code: {}", exit_code);
-                        }
+            if exit_status != i32::from(service_details.expect.status)
+                && let Some(action) = &service_details.expect.if_not
+                && should_continue_fallback(service_name, &counters, action).await
+            {
+                if let Some(cmd) = &action.cmd {
+                    let exit_code = execute_fallback_command(cmd).await?;
+                    debug!("Fallback action executed with exit code: {}", exit_code);
+                }
 
-                        if let Some(http) = &action.http {
-                            let status = execute_fallback_http(http).await?;
-                            info!(
-                                "Executed fallback HTTP request for {} with status code {}",
-                                service_name, status
-                            );
-                        }
-                    }
+                if let Some(http) = &action.http {
+                    let status = execute_fallback_http(http).await?;
+                    info!(
+                        "Executed fallback HTTP request for {} with status code {}",
+                        service_name, status
+                    );
                 }
             }
         }
@@ -215,6 +218,7 @@ async fn scan_service(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::cli::config::{Action, Expect, HttpMethod};
@@ -225,7 +229,7 @@ mod tests {
     use tokio::runtime::Runtime;
     use tokio::time::Duration;
 
-    /// Helper Function: Create Mock ServiceDetails
+    /// Helper Function: Create Mock `ServiceDetails`
     fn mock_service_details(
         test_cmd: Option<&str>,
         expect_status: u16,
@@ -245,7 +249,7 @@ mod tests {
             follow_redirects: Some(true),
             headers: None,
             max_bytes: None,
-            test: test_cmd.map(|cmd| cmd.to_string()),
+            test: test_cmd.map(std::string::ToString::to_string),
             timeout: Duration::from_secs(5),
             url: None,
             method: HttpMethod::Get,
@@ -274,7 +278,7 @@ mod tests {
     #[test]
     // this test is only for the test run_command function, not the actual code
     fn test_command_exit_status() {
-        let rt = Runtime::new().unwrap();
+        let rt = Runtime::new().expect("Failed to create runtime");
 
         let exit_code_0 = rt.block_on(run_command("exit 0"));
         assert_eq!(exit_code_0, 0, "Command `exit 0` should return exit code 0");
@@ -295,7 +299,11 @@ mod tests {
 
         let url = format!("{}/test", server.url());
         let client = Client::new();
-        let response = client.get(&url).send().await.unwrap();
+        let response = client
+            .get(&url)
+            .send()
+            .await
+            .expect("Failed to send request");
         let status = response.status();
 
         assert_eq!(status, StatusCode::OK, "Expected status 200 OK");
@@ -306,7 +314,7 @@ mod tests {
     async fn test_scan_service_command_success() {
         let service_details = mock_service_details(Some("exit 0"), 0, None);
         let action = mock_action("exit 0");
-        let metrics = Arc::new(ServiceMetrics::new().unwrap());
+        let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
         let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
         let result = scan_service(
@@ -329,7 +337,7 @@ mod tests {
     async fn test_scan_service_command_failure_with_fallback() {
         let service_details = mock_service_details(Some("exit 1"), 0, Some("echo 'Fallback'"));
         let action = mock_action("exit 1");
-        let metrics = Arc::new(ServiceMetrics::new().unwrap());
+        let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
         let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
         let result = scan_service(
@@ -359,9 +367,14 @@ mod tests {
         let action = mock_action("exit 1");
 
         // Set stop condition to 2
-        service_details.expect.if_not.as_mut().unwrap().stop = Some(2);
+        service_details
+            .expect
+            .if_not
+            .as_mut()
+            .expect("if_not should be present")
+            .stop = Some(2);
 
-        let metrics = Arc::new(ServiceMetrics::new().unwrap());
+        let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
         let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
         // First attempt
@@ -432,9 +445,14 @@ mod tests {
         let action = mock_action("exit 1");
 
         // Ensure no stop limit is set
-        service_details.expect.if_not.as_mut().unwrap().stop = None;
+        service_details
+            .expect
+            .if_not
+            .as_mut()
+            .expect("if_not should be present")
+            .stop = None;
 
-        let metrics = Arc::new(ServiceMetrics::new().unwrap());
+        let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
         let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
         // Run scan_service 100 times
@@ -466,7 +484,7 @@ mod tests {
     async fn test_scan_service_command_failure_with_fallback_and_stop() {
         let service_details = mock_service_details(Some("exit 1"), 0, Some("echo 'Fallback'"));
         let action = mock_action("exit 1");
-        let metrics = Arc::new(ServiceMetrics::new().unwrap());
+        let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
         let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
         let result = scan_service(
@@ -512,7 +530,7 @@ mod tests {
         };
 
         let action = ServiceAction::Url(Client::new());
-        let metrics = Arc::new(ServiceMetrics::new().unwrap());
+        let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
         let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
         tokio::spawn(async move {
@@ -528,9 +546,5 @@ mod tests {
         });
 
         tokio::time::sleep(Duration::from_millis(500)).await;
-        assert!(
-            true,
-            "Run service should execute multiple times in test interval"
-        );
     }
 }

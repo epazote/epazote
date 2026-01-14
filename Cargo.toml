@@ -9,8 +9,37 @@ repository = "https://github.com/epazote/epazote/"
 readme = "README.md"
 keywords = ["metrics", "supervisor", "monitoring"]
 categories = ["command-line-utilities", "command-line-interface"]
-edition = "2021"
+edition = "2024"
 license = "BSD-3-Clause"
+
+[lints.rust]
+warnings = "deny"
+
+[lints.clippy]
+# Allow unstable/opinionated lints (lower priority so individual lints can override)
+nursery = { level = "allow", priority = -1 }
+
+# Enforce pedantic lints
+pedantic = "deny"
+
+# Core lint groups
+all = "deny"
+correctness = "deny"
+suspicious = "deny"
+perf = "deny"
+complexity = "deny"
+
+# Safety-critical lints
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+await_holding_lock = "deny"
+
+# Performance + memory reliability
+needless_borrow = "deny"
+needless_collect = "deny"
+large_stack_arrays = "deny"
 
 [dependencies]
 anyhow = "1"
@@ -20,13 +49,12 @@ clap = "4.5"
 futures = "0.3"
 futures-util = "0.3"
 ignore = "0.4"
-openssl = { version = "0.10", optional = true, features = ["vendored"] }
-opentelemetry = "0.30"
-opentelemetry-otlp = { version = "0.30", features = ["grpc-tonic", "tls"] }
-opentelemetry_sdk = { version = "0.30", features = ["rt-tokio"] }
+opentelemetry = "0.31"
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["grpc-tonic", "tls", "trace"] }
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
 prometheus = "0.14"
 regex = "1.11"
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "form", "rustls", "http2", "charset", "gzip", "brotli", "deflate"] }
 rustls = "0.23"
 rustls-native-certs = "0.8"
 serde = { version = "1", features = ["derive"] }
@@ -36,7 +64,7 @@ strum = { version = "0.27", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 tokio-rustls = "0.26"
 tracing = "0.1"
-tracing-opentelemetry = "0.31"
+tracing-opentelemetry = "0.32"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 url = "2"
 webpki = "0.22"
@@ -44,7 +72,7 @@ x509-parser = "0.17"
 
 [dev-dependencies]
 assert_cmd = "2.0"
-ctor = "0.4"
+ctor = "0.6"
 env_logger = "0.11"
 mockito = "1.7"
 predicates = "3.1"
@@ -54,3 +82,9 @@ tempfile = "3.17"
 assets = [
     { source = "target/release/epazote", dest = "/usr/bin/epazote", mode = "0755" },
 ]
+
+[package.metadata.deb]
+assets = [
+    { source = "target/release/epazote", dest = "/usr/bin/epazote", mode = "0755" },
+]
+depends = ""

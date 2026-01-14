@@ -1,8 +1,8 @@
 use crate::cli::config::ServiceDetails;
 use anyhow::Result;
 use reqwest::{
-    header::{HeaderMap, HeaderName, HeaderValue},
     Client, ClientBuilder,
+    header::{HeaderMap, HeaderName, HeaderValue},
 };
 
 pub static APP_USER_AGENT: &str =
@@ -16,6 +16,13 @@ pub struct ClientConfig {
     pub headers: HeaderMap,
 }
 
+/// Builds a `reqwest::Client` based on the provided `ServiceDetails`.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The `service_details` contains invalid headers.
+/// - The `reqwest::Client` fails to build.
 pub fn build_client(service_details: &ServiceDetails) -> Result<(ClientBuilder, ClientConfig)> {
     let timeout = service_details.timeout;
     let user_agent = APP_USER_AGENT.to_string();
@@ -32,8 +39,10 @@ pub fn build_client(service_details: &ServiceDetails) -> Result<(ClientBuilder, 
 
     if let Some(service_headers) = &service_details.headers {
         for (key, value) in service_headers {
-            let header_name = HeaderName::from_bytes(key.as_bytes()).expect("Invalid header name");
-            let header_value = HeaderValue::from_str(value).expect("Invalid header value");
+            let header_name = HeaderName::from_bytes(key.as_bytes())
+                .map_err(|_| anyhow::anyhow!("Invalid header name: {key}"))?;
+            let header_value = HeaderValue::from_str(value)
+                .map_err(|_| anyhow::anyhow!("Invalid header value for key: {key}"))?;
 
             headers.insert(header_name, header_value);
         }
@@ -52,6 +61,7 @@ pub fn build_client(service_details: &ServiceDetails) -> Result<(ClientBuilder, 
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::cli::config::Config;
@@ -60,15 +70,17 @@ mod tests {
 
     // Helper to create config from YAML
     fn create_config(yaml: &str) -> Config {
-        let mut tmp_file = tempfile::NamedTempFile::new().unwrap();
-        tmp_file.write_all(yaml.as_bytes()).unwrap();
-        tmp_file.flush().unwrap();
-        Config::new(tmp_file.path().to_path_buf()).unwrap()
+        let mut tmp_file = tempfile::NamedTempFile::new().expect("Failed to create temp file");
+        tmp_file
+            .write_all(yaml.as_bytes())
+            .expect("Failed to write to temp file");
+        tmp_file.flush().expect("Failed to flush temp file");
+        Config::new(tmp_file.path().to_path_buf()).expect("Failed to load config")
     }
 
     #[tokio::test]
     async fn test_build_client_multiple_services() {
-        let yaml = r#"
+        let yaml = r"
 ---
 services:
   test:
@@ -87,7 +99,7 @@ services:
       User-Agent: TestAgent
     expect:
       status: 200
-    "#;
+    ";
 
         let mut server = Server::new_async().await;
 
@@ -118,9 +130,13 @@ services:
             let _m = mock.create_async().await;
 
             let config = create_config(yaml);
-            let service = config.services.get(*service_name).unwrap();
+            let service = config
+                .services
+                .get(*service_name)
+                .expect("Service not found");
 
-            let (builder, client_config) = build_client(service).unwrap();
+            let (builder, client_config) =
+                build_client(service).expect("Failed to build client builder");
 
             // Check timeout
             assert_eq!(client_config.timeout, std::time::Duration::from_secs(5));
@@ -131,13 +147,16 @@ services:
             // Check redirect policy
             assert_eq!(
                 client_config.follow_redirects, *expected_redirect,
-                "Follow redirects mismatch for service {}",
-                service_name
+                "Follow redirects mismatch for service {service_name}"
             );
 
-            let client = builder.build().unwrap();
-            let url = format!("{}/{}", server.url(), service_name);
-            let response = client.get(url).send().await.unwrap();
+            let client = builder.build().expect("Failed to build client");
+            let url = format!("{}/{service_name}", server.url());
+            let response = client
+                .get(url)
+                .send()
+                .await
+                .expect("Failed to send request");
 
             assert_eq!(response.status(), 200);
         }

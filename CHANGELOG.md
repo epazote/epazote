@@ -1,6 +1,12 @@
 Changelog
 =========
 
+## 3.0.2
+- Rust 2024 edition update.
+- Switch from OpenSSL to Rustls.
+- Updated dependencies.
+- Code cleanup and strict linting.
+
 ## 3.0.0
 - FreeBSD port `sysutils/epazote/`
 

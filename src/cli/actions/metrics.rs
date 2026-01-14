@@ -1,6 +1,6 @@
-use anyhow::{anyhow, Result};
-use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Router};
-use prometheus::{histogram_opts, opts, HistogramVec, IntCounterVec, IntGaugeVec, Registry};
+use anyhow::{Result, anyhow};
+use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
+use prometheus::{HistogramVec, IntCounterVec, IntGaugeVec, Registry, histogram_opts, opts};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{debug, error};
@@ -16,6 +16,11 @@ pub struct ServiceMetrics {
 }
 
 impl ServiceMetrics {
+    /// Create a new `ServiceMetrics` instance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the metrics cannot be created or registered.
     pub fn new() -> Result<Self> {
         let registry = Arc::new(Registry::new());
 
@@ -61,6 +66,11 @@ impl ServiceMetrics {
     }
 }
 
+/// Starts the metrics server.
+///
+/// # Errors
+///
+/// Returns an error if the server cannot bind to the port or encounters a runtime error.
 pub async fn metrics_server(metrics: Arc<ServiceMetrics>, port: u16) -> Result<()> {
     let app = Router::new()
         .route("/metrics", get(metrics_handler))
@@ -75,7 +85,7 @@ pub async fn metrics_server(metrics: Arc<ServiceMetrics>, port: u16) -> Result<(
 
     axum::serve(listener, app.into_make_service())
         .await
-        .map_err(|e| anyhow!("Server error: {}", e))
+        .map_err(|e| anyhow!("Server error: {e}"))
 }
 
 pub async fn metrics_handler(State(metrics): State<Arc<ServiceMetrics>>) -> impl IntoResponse {
@@ -95,7 +105,7 @@ pub async fn metrics_handler(State(metrics): State<Arc<ServiceMetrics>>) -> impl
     let mut metrics_str = String::new();
 
     match encoder.encode_utf8(&metric_families, &mut metrics_str) {
-        Ok(_) => {
+        Ok(()) => {
             debug!("Metrics encoded successfully.");
             (StatusCode::OK, metrics_str).into_response()
         }
@@ -111,6 +121,7 @@ pub async fn metrics_handler(State(metrics): State<Arc<ServiceMetrics>>) -> impl
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::cli::{
@@ -124,10 +135,12 @@ mod tests {
 
     // Helper to create config from YAML
     fn create_config(yaml: &str) -> Config {
-        let mut tmp_file = tempfile::NamedTempFile::new().unwrap();
-        tmp_file.write_all(yaml.as_bytes()).unwrap();
-        tmp_file.flush().unwrap();
-        Config::new(tmp_file.path().to_path_buf()).unwrap()
+        let mut tmp_file = tempfile::NamedTempFile::new().expect("Failed to create temp file");
+        tmp_file
+            .write_all(yaml.as_bytes())
+            .expect("Failed to write to temp file");
+        tmp_file.flush().expect("Failed to flush temp file");
+        Config::new(tmp_file.path().to_path_buf()).expect("Failed to load config")
     }
 
     #[tokio::test]
@@ -137,20 +150,19 @@ mod tests {
         let mock_url = server.url();
 
         let yaml = format!(
-            r#"
+            r"
 ---
 services:
   test:
-    url: {}/test
+    url: {mock_url}/test
     every: 30s
     expect:
       status: 200
-    "#,
-            mock_url
+    "
         );
 
         let config = create_config(&yaml);
-        let service = config.services.get("test").unwrap();
+        let service = config.services.get("test").expect("Service not found");
 
         let _ = env_logger::try_init();
         let mock = server
@@ -163,12 +175,17 @@ services:
             .create_async()
             .await;
 
-        let (builder, _client_config) = build_client(service).unwrap();
-        let client = builder.build().unwrap();
-        let request = build_http_request(&client, service).unwrap();
-        let response = client.execute(request.build().unwrap()).await.unwrap();
+        let (builder, _client_config) =
+            build_client(service).expect("Failed to build client builder");
+        let client = builder.build().expect("Failed to build client");
+        let request = build_http_request(&client, service).expect("Failed to build request");
+        let response = client
+            .execute(request.build().expect("Failed to build request"))
+            .await
+            .expect("Failed to execute request");
         let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
-        let metrics = Arc::new(ServiceMetrics::new().unwrap());
+        let metrics =
+            Arc::new(ServiceMetrics::new().expect("Failed to initialize service metrics"));
 
         // Fetch initial values
         let initial_status = metrics
@@ -183,7 +200,7 @@ services:
             .map(|m| m.get())
             .unwrap_or(0);
 
-        let rs = handle_http_response("test", &service, response, &metrics, counters.clone()).await;
+        let rs = handle_http_response("test", service, response, &metrics, counters.clone()).await;
 
         assert!(rs.is_ok());
 
@@ -222,12 +239,15 @@ services:
             .create_async()
             .await;
 
-        let request = build_http_request(&client, service).unwrap();
-        let response = client.execute(request.build().unwrap()).await.unwrap();
-
-        let rs = handle_http_response("test", &service, response, &metrics, counters)
+        let request = build_http_request(&client, service).expect("Failed to build request");
+        let response = client
+            .execute(request.build().expect("Failed to build request"))
             .await
-            .unwrap();
+            .expect("Failed to execute request");
+
+        let rs = handle_http_response("test", service, response, &metrics, counters)
+            .await
+            .expect("Failed to handle HTTP response");
         // assert rs is false
         assert!(!rs);
 

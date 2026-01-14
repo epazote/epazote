@@ -5,7 +5,7 @@ use crate::cli::{
     },
     config::{BodyType, ServiceDetails},
 };
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
 use regex::Regex;
 use reqwest::{Client, Method, RequestBuilder};
@@ -13,6 +13,13 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info};
 
+use std::hash::BuildHasher;
+
+/// Builds a `reqwest::RequestBuilder` from the service details.
+///
+/// # Errors
+///
+/// Returns an error if the URL is missing, the method is invalid, or the request cannot be built.
 pub fn build_http_request(
     client: &Client,
     service_details: &ServiceDetails,
@@ -46,12 +53,16 @@ pub fn build_http_request(
 }
 
 /// Handles the HTTP response
-pub async fn handle_http_response(
+///
+/// # Errors
+///
+/// Returns an error if the fallback command or HTTP request fails.
+pub async fn handle_http_response<S: BuildHasher>(
     service_name: &str,
     service_details: &ServiceDetails,
     response: reqwest::Response,
     metrics: &ServiceMetrics,
-    counters: Arc<Mutex<HashMap<String, usize>>>,
+    counters: Arc<Mutex<HashMap<String, usize, S>>>,
 ) -> Result<bool> {
     let status = response.status();
     let headers = response.headers().clone();
@@ -93,7 +104,7 @@ pub async fn handle_http_response(
 
                     // Truncate the chunk if it exceeds remaining bytes limit
                     let limited_chunk = if chunk_size > remaining_bytes {
-                        &bytes[..remaining_bytes]
+                        bytes.get(..remaining_bytes).unwrap_or(&bytes)
                     } else {
                         &bytes
                     };
@@ -145,7 +156,7 @@ pub async fn handle_http_response(
     metrics
         .epazote_status
         .with_label_values(&[service_name])
-        .set(if is_match { 1 } else { 0 });
+        .set(i64::from(is_match));
 
     info!(
         service_name = service_name,
@@ -156,25 +167,24 @@ pub async fn handle_http_response(
         matches = is_match
     );
 
-    if !is_match {
-        if let Some(action) = &service_details.expect.if_not {
-            if should_continue_fallback(service_name, &counters, action).await {
-                if let Some(cmd) = &action.cmd {
-                    let exit_code = execute_fallback_command(cmd).await?;
-                    info!(
-                        "Executed fallback command for {} with exit code {}",
-                        service_name, exit_code
-                    );
-                }
+    if !is_match
+        && let Some(action) = &service_details.expect.if_not
+        && should_continue_fallback(service_name, &counters, action).await
+    {
+        if let Some(cmd) = &action.cmd {
+            let exit_code = execute_fallback_command(cmd).await?;
+            info!(
+                "Executed fallback command for {} with exit code {}",
+                service_name, exit_code
+            );
+        }
 
-                if let Some(http) = &action.http {
-                    let status = execute_fallback_http(http).await?;
-                    info!(
-                        "Executed fallback HTTP request for {} with status code {}",
-                        service_name, status
-                    );
-                }
-            }
+        if let Some(http) = &action.http {
+            let status = execute_fallback_http(http).await?;
+            info!(
+                "Executed fallback HTTP request for {} with status code {}",
+                service_name, status
+            );
         }
     }
 
@@ -210,6 +220,7 @@ fn generate_regex_pattern(input: &str) -> Result<Regex> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::cli::{
@@ -224,19 +235,22 @@ mod tests {
 
     // Helper to create config from YAML
     fn create_config(yaml: &str) -> Config {
-        let mut tmp_file = tempfile::NamedTempFile::new().unwrap();
-        tmp_file.write_all(yaml.as_bytes()).unwrap();
-        tmp_file.flush().unwrap();
-        Config::new(tmp_file.path().to_path_buf()).unwrap()
+        let mut tmp_file = tempfile::NamedTempFile::new().expect("Failed to create temp file");
+        tmp_file
+            .write_all(yaml.as_bytes())
+            .expect("Failed to write to temp file");
+        tmp_file.flush().expect("Failed to flush temp file");
+        Config::new(tmp_file.path().to_path_buf()).expect("Failed to load config")
     }
 
     // helper to generate a string of numbers
     fn generate_numbers(limit: usize, start: usize) -> String {
+        use std::fmt::Write;
         let mut result = String::new();
         let mut num = start;
         while result.len() + 2 < limit {
             // Approximate space for "N "
-            result.push_str(&format!("{} ", num));
+            let _ = write!(result, "{num} ");
             num += 1;
         }
         result
@@ -245,34 +259,39 @@ mod tests {
     #[test]
     fn test_generate_regex_pattern() {
         // Normal input should be escaped and wrapped in ".* .*"
-        let pattern = generate_regex_pattern("test").unwrap();
+        let pattern = generate_regex_pattern("test").expect("Failed to generate regex pattern");
         assert_eq!(pattern.as_str(), r".*test.*");
 
         // Raw regex should be extracted without modification
-        let pattern = generate_regex_pattern(r#"r"test""#).unwrap();
+        let pattern =
+            generate_regex_pattern(r#"r"test""#).expect("Failed to generate regex pattern");
         assert_eq!(pattern.as_str(), "test");
 
         // Raw regex without closing quote should still work
-        let pattern = generate_regex_pattern(r#"r"test"#).unwrap();
+        let pattern =
+            generate_regex_pattern(r#"r"test"#).expect("Failed to generate regex pattern");
         assert_eq!(pattern.as_str(), "test");
 
         // Raw regex with extra quotes should be handled
-        let pattern = generate_regex_pattern(r#"r"(?i).*hello.*""#).unwrap();
+        let pattern = generate_regex_pattern(r#"r"(?i).*hello.*""#)
+            .expect("Failed to generate regex pattern");
         assert_eq!(pattern.as_str(), "(?i).*hello.*");
 
         // Standard input should be escaped
-        let pattern = generate_regex_pattern("hello world").unwrap();
+        let pattern =
+            generate_regex_pattern("hello world").expect("Failed to generate regex pattern");
         assert_eq!(pattern.as_str(), r".*hello world.*"); // Space should be escaped
-                                                          //
-                                                          // Ensure regex matching works
+        //
+        // Ensure regex matching works
         assert!(pattern.is_match("this is a hello world test"));
         assert!(!pattern.is_match("this is a goodbye test"));
 
         // the . should be escaped
-        let pattern = generate_regex_pattern("hello.world").unwrap();
+        let pattern =
+            generate_regex_pattern("hello.world").expect("Failed to generate regex pattern");
         assert_eq!(pattern.as_str(), r".*hello\.world.*"); // Space should be escaped
-                                                           //
-        let pattern = generate_regex_pattern("a+b*").unwrap();
+        //
+        let pattern = generate_regex_pattern("a+b*").expect("Failed to generate regex pattern");
         assert_eq!(pattern.as_str(), r".*a\+b\*.*"); // Space should be escaped
     }
 
@@ -303,13 +322,17 @@ mod tests {
             body: None,
         };
 
-        let metrics = Arc::new(ServiceMetrics::new().unwrap());
+        let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
         let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
-        let (builder, _client_config) = build_client(&service).unwrap();
-        let client = builder.build().unwrap();
-        let request = build_http_request(&client, &service).unwrap();
-        let response = client.execute(request.build().unwrap()).await.unwrap();
+        let (builder, _client_config) =
+            build_client(&service).expect("Failed to build client builder");
+        let client = builder.build().expect("Failed to build client");
+        let request = build_http_request(&client, &service).expect("Failed to build request");
+        let response = client
+            .execute(request.build().expect("Failed to build request"))
+            .await
+            .expect("Failed to execute request");
 
         let rs = handle_http_response("test", &service, response, &metrics, counters).await;
 
@@ -323,11 +346,11 @@ mod tests {
         let mock_url = server.url();
 
         let yaml = format!(
-            r#"
+            r"
 ---
 services:
   test:
-    url: {}/test
+    url: {mock_url}/test
     method: POST
     body:
       json:
@@ -338,12 +361,11 @@ services:
       X-Custom-Header: TestValue
     expect:
       status: 200
-    "#,
-            mock_url
+    "
         );
 
         let config = create_config(&yaml);
-        let service = config.services.get("test").unwrap();
+        let service = config.services.get("test").expect("Service not found");
 
         // Define expected JSON body
         let expected_json = json!({
@@ -365,16 +387,20 @@ services:
             .create_async()
             .await;
 
-        let (builder, _client_config) = build_client(service).unwrap();
-        let client = builder.build().unwrap();
-        let request = build_http_request(&client, service).unwrap();
+        let (builder, _client_config) =
+            build_client(service).expect("Failed to build client builder");
+        let client = builder.build().expect("Failed to build client");
+        let request = build_http_request(&client, service).expect("Failed to build request");
 
-        if let Some(body) = &config.services.get("test").unwrap().body {
-            let json_body = serde_json::to_string(body).unwrap();
+        if let Some(body) = &config.services.get("test").expect("Service not found").body {
+            let json_body = serde_json::to_string(body).expect("Failed to serialize body");
             assert_eq!(json_body, expected_json.to_string());
         }
 
-        let response = client.execute(request.build().unwrap()).await.unwrap();
+        let response = client
+            .execute(request.build().expect("Failed to build request"))
+            .await
+            .expect("Failed to execute request");
 
         assert_eq!(response.status(), StatusCode::OK);
     }
@@ -386,11 +412,11 @@ services:
         let mock_url = server.url();
 
         let yaml = format!(
-            r#"
+            r"
 ---
 services:
   test:
-    url: {}/test
+    url: {mock_url}/test
     method: POST
     body:
       form:
@@ -401,15 +427,14 @@ services:
       X-Custom-Header: TestValue
     expect:
       status: 200
-    "#,
-            mock_url
+    "
         );
 
         let config = create_config(&yaml);
-        let service = config.services.get("test").unwrap();
+        let service = config.services.get("test").expect("Service not found");
 
         // Define expected form body
-        let expected_form = vec![
+        let expected_form = [
             ("key".to_string(), "value".to_string()),
             ("oi".to_string(), "hola".to_string()),
         ];
@@ -435,20 +460,26 @@ services:
             .create_async()
             .await;
 
-        let (builder, _client_config) = build_client(service).unwrap();
-        let client = builder.build().unwrap();
-        let request = build_http_request(&client, service).unwrap();
+        let (builder, _client_config) =
+            build_client(service).expect("Failed to build client builder");
+        let client = builder.build().expect("Failed to build client");
+        let request = build_http_request(&client, service).expect("Failed to build request");
 
         // Check that the body is correctly interpreted as a form
-        if let Some(BodyType::Form(body)) = &config.services.get("test").unwrap().body {
-            for (key, value) in expected_form.iter() {
+        if let Some(BodyType::Form(body)) =
+            &config.services.get("test").expect("Service not found").body
+        {
+            for (key, value) in &expected_form {
                 assert_eq!(body.get(key), Some(value));
             }
         } else {
             panic!("Expected BodyType::Form but found something else");
         }
 
-        let response = client.execute(request.build().unwrap()).await.unwrap();
+        let response = client
+            .execute(request.build().expect("Failed to build request"))
+            .await
+            .expect("Failed to execute request");
 
         assert_eq!(response.status(), StatusCode::OK);
     }
@@ -464,7 +495,7 @@ services:
 ---
 services:
   test:
-    url: {}/test
+    url: {mock_url}/test
     method: POST
     body: "Hello, world!"
     every: 30s
@@ -473,12 +504,11 @@ services:
       X-Custom-Header: TestValue
     expect:
       status: 200
-    "#,
-            mock_url
+    "#
         );
 
         let config = create_config(&yaml);
-        let service = config.services.get("test").unwrap();
+        let service = config.services.get("test").expect("Service not found");
 
         // Expected plain text body
         let expected_text = String::from("Hello, world!");
@@ -497,18 +527,24 @@ services:
             .create_async()
             .await;
 
-        let (builder, _client_config) = build_client(service).unwrap();
-        let client = builder.build().unwrap();
-        let request = build_http_request(&client, service).unwrap();
+        let (builder, _client_config) =
+            build_client(service).expect("Failed to build client builder");
+        let client = builder.build().expect("Failed to build client");
+        let request = build_http_request(&client, service).expect("Failed to build request");
 
         // Check that the body is correctly interpreted as Text
-        if let Some(BodyType::Text(body)) = &config.services.get("test").unwrap().body {
+        if let Some(BodyType::Text(body)) =
+            &config.services.get("test").expect("Service not found").body
+        {
             assert_eq!(body, &expected_text);
         } else {
             panic!("Expected BodyType::Text but found something else");
         }
 
-        let response = client.execute(request.build().unwrap()).await.unwrap();
+        let response = client
+            .execute(request.build().expect("Failed to build request"))
+            .await
+            .expect("Failed to execute request");
 
         assert_eq!(response.status(), StatusCode::OK);
     }
@@ -520,21 +556,20 @@ services:
         let mock_url = server.url();
 
         let yaml = format!(
-            r#"
+            r"
 ---
 services:
   test:
-    url: {}/test
+    url: {mock_url}/test
     every: 30s
     expect:
       status: 200
       body: sopas
-    "#,
-            mock_url
+    "
         );
 
         let config = create_config(&yaml);
-        let service = config.services.get("test").unwrap();
+        let service = config.services.get("test").expect("Service not found");
 
         let _ = env_logger::try_init();
         let _mock = server
@@ -548,11 +583,15 @@ services:
             .create_async()
             .await;
 
-        let (builder, _client_config) = build_client(service).unwrap();
-        let client = builder.build().unwrap();
-        let request = build_http_request(&client, service).unwrap();
+        let (builder, _client_config) =
+            build_client(service).expect("Failed to build client builder");
+        let client = builder.build().expect("Failed to build client");
+        let request = build_http_request(&client, service).expect("Failed to build request");
 
-        let response = client.execute(request.build().unwrap()).await.unwrap();
+        let response = client
+            .execute(request.build().expect("Failed to build request"))
+            .await
+            .expect("Failed to execute request");
 
         let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
@@ -560,11 +599,11 @@ services:
             "test",
             service,
             response,
-            &ServiceMetrics::new().unwrap(),
+            &ServiceMetrics::new().expect("Failed to create metrics"),
             counters,
         )
         .await
-        .unwrap();
+        .expect("Failed to handle response");
 
         assert!(rs);
     }
@@ -580,19 +619,18 @@ services:
 ---
 services:
   test-stop:
-    url: {}/test
+    url: {mock_url}/test
     every: 30s
     expect:
       status: 200
       body: r"\b(?:sopas|cit-02)\b" # match sopas or cit-02
       if_not:
         stop: 2
-    "#,
-            mock_url
+    "#
         );
 
         let config = create_config(&yaml);
-        let service = config.services.get("test-stop").unwrap();
+        let service = config.services.get("test-stop").expect("Service not found");
 
         let _ = env_logger::try_init();
         let _mock = server
@@ -606,10 +644,14 @@ services:
             .create_async()
             .await;
 
-        let (builder, _client_config) = build_client(service).unwrap();
-        let client = builder.build().unwrap();
-        let request = build_http_request(&client, service).unwrap();
-        let response = client.execute(request.build().unwrap()).await.unwrap();
+        let (builder, _client_config) =
+            build_client(service).expect("Failed to build client builder");
+        let client = builder.build().expect("Failed to build client");
+        let request = build_http_request(&client, service).expect("Failed to build request");
+        let response = client
+            .execute(request.build().expect("Failed to build request"))
+            .await
+            .expect("Failed to execute request");
 
         let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
@@ -617,11 +659,11 @@ services:
             "test-stop",
             service,
             response,
-            &ServiceMetrics::new().unwrap(),
+            &ServiceMetrics::new().expect("Failed to create metrics"),
             Arc::clone(&counters),
         )
         .await
-        .unwrap();
+        .expect("Failed to handle response");
 
         assert!(!rs1);
 
@@ -632,18 +674,21 @@ services:
         };
         assert_eq!(count1, 1, "Counter should be 1 after first attempt");
 
-        let request = build_http_request(&client, service).unwrap();
-        let response = client.execute(request.build().unwrap()).await.unwrap();
+        let request = build_http_request(&client, service).expect("Failed to build request");
+        let response = client
+            .execute(request.build().expect("Failed to build request"))
+            .await
+            .expect("Failed to execute request");
 
         let rs2 = handle_http_response(
             "test-stop",
             service,
             response,
-            &ServiceMetrics::new().unwrap(),
+            &ServiceMetrics::new().expect("Failed to create metrics"),
             Arc::clone(&counters),
         )
         .await
-        .unwrap();
+        .expect("Failed to handle response");
 
         assert!(!rs2);
 
@@ -662,24 +707,23 @@ services:
         let mock_url = server.url();
 
         let yaml = format!(
-            r#"
+            r"
 ---
 services:
   test-stop:
-    url: {}/test
+    url: {mock_url}/test
     every: 30s
     expect:
       status: 200
       body: http
       if_not:
         stop: 2
-        http: {}/notify?milei=libra
-    "#,
-            mock_url, mock_url
+        http: {mock_url}/notify?milei=libra
+    "
         );
 
         let config = create_config(&yaml);
-        let service = config.services.get("test-stop").unwrap();
+        let service = config.services.get("test-stop").expect("Service not found");
 
         let _ = env_logger::try_init();
         let _mock = server
@@ -693,10 +737,14 @@ services:
             .create_async()
             .await;
 
-        let (builder, _client_config) = build_client(service).unwrap();
-        let client = builder.build().unwrap();
-        let request = build_http_request(&client, service).unwrap();
-        let response = client.execute(request.build().unwrap()).await.unwrap();
+        let (builder, _client_config) =
+            build_client(service).expect("Failed to build client builder");
+        let client = builder.build().expect("Failed to build client");
+        let request = build_http_request(&client, service).expect("Failed to build request");
+        let response = client
+            .execute(request.build().expect("Failed to build request"))
+            .await
+            .expect("Failed to execute request");
 
         let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
@@ -704,11 +752,11 @@ services:
             "test-stop",
             service,
             response,
-            &ServiceMetrics::new().unwrap(),
+            &ServiceMetrics::new().expect("Failed to create metrics"),
             Arc::clone(&counters),
         )
         .await
-        .unwrap();
+        .expect("Failed to handle response");
 
         assert!(!rs1);
 
@@ -719,18 +767,21 @@ services:
         };
         assert_eq!(count1, 1, "Counter should be 1 after first attempt");
 
-        let request = build_http_request(&client, service).unwrap();
-        let response = client.execute(request.build().unwrap()).await.unwrap();
+        let request = build_http_request(&client, service).expect("Failed to build request");
+        let response = client
+            .execute(request.build().expect("Failed to build request"))
+            .await
+            .expect("Failed to execute request");
 
         let rs2 = handle_http_response(
             "test-stop",
             service,
             response,
-            &ServiceMetrics::new().unwrap(),
+            &ServiceMetrics::new().expect("Failed to create metrics"),
             Arc::clone(&counters),
         )
         .await
-        .unwrap();
+        .expect("Failed to handle response");
 
         assert!(!rs2);
 
@@ -753,17 +804,16 @@ services:
 ---
 services:
   test-stop:
-    url: {}/test
+    url: {mock_url}/test
     every: 30s
     expect:
       status: 200
       body: r"success|ok"
-    "#,
-            mock_url
+    "#
         );
 
         let config = create_config(&yaml);
-        let service = config.services.get("test-stop").unwrap();
+        let service = config.services.get("test-stop").expect("Service not found");
 
         let _ = env_logger::try_init();
         let mock = server
@@ -777,10 +827,14 @@ services:
             .create_async()
             .await;
 
-        let (builder, _client_config) = build_client(service).unwrap();
-        let client = builder.build().unwrap();
-        let request = build_http_request(&client, service).unwrap();
-        let response = client.execute(request.build().unwrap()).await.unwrap();
+        let (builder, _client_config) =
+            build_client(service).expect("Failed to build client builder");
+        let client = builder.build().expect("Failed to build client");
+        let request = build_http_request(&client, service).expect("Failed to build request");
+        let response = client
+            .execute(request.build().expect("Failed to build request"))
+            .await
+            .expect("Failed to execute request");
 
         let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
@@ -788,11 +842,11 @@ services:
             "test-stop",
             service,
             response,
-            &ServiceMetrics::new().unwrap(),
+            &ServiceMetrics::new().expect("Failed to create metrics"),
             Arc::clone(&counters),
         )
         .await
-        .unwrap();
+        .expect("Failed to handle response");
 
         assert!(rs1);
 
@@ -808,18 +862,21 @@ services:
             .create_async()
             .await;
 
-        let request = build_http_request(&client, service).unwrap();
-        let response = client.execute(request.build().unwrap()).await.unwrap();
+        let request = build_http_request(&client, service).expect("Failed to build request");
+        let response = client
+            .execute(request.build().expect("Failed to build request"))
+            .await
+            .expect("Failed to execute request");
 
         let rs2 = handle_http_response(
             "test-stop",
             service,
             response,
-            &ServiceMetrics::new().unwrap(),
+            &ServiceMetrics::new().expect("Failed to create metrics"),
             Arc::clone(&counters),
         )
         .await
-        .unwrap();
+        .expect("Failed to handle response");
 
         assert!(!rs2);
 
@@ -835,18 +892,21 @@ services:
             .create_async()
             .await;
 
-        let request = build_http_request(&client, service).unwrap();
-        let response = client.execute(request.build().unwrap()).await.unwrap();
+        let request = build_http_request(&client, service).expect("Failed to build request");
+        let response = client
+            .execute(request.build().expect("Failed to build request"))
+            .await
+            .expect("Failed to execute request");
 
         let rs3 = handle_http_response(
             "test-stop",
             service,
             response,
-            &ServiceMetrics::new().unwrap(),
+            &ServiceMetrics::new().expect("Failed to create metrics"),
             Arc::clone(&counters),
         )
         .await
-        .unwrap();
+        .expect("Failed to handle response");
 
         assert!(rs3);
     }
@@ -862,18 +922,20 @@ services:
 ---
 services:
   test-max_bytes:
-    url: {}/test
+    url: {mock_url}/test
     every: 30s
     expect:
       status: 200
       body: "34917f37-72b9-403f-887c-20c5e93b7173"
     max_bytes: 20
-    "#,
-            mock_url
+    "#
         );
 
         let config = create_config(&yaml);
-        let service = config.services.get("test-max_bytes").unwrap();
+        let service = config
+            .services
+            .get("test-max_bytes")
+            .expect("Service not found");
 
         let _ = env_logger::try_init();
         let _mock = server
@@ -887,10 +949,14 @@ services:
             .create_async()
             .await;
 
-        let (builder, _client_config) = build_client(service).unwrap();
-        let client = builder.build().unwrap();
-        let request = build_http_request(&client, service).unwrap();
-        let response = client.execute(request.build().unwrap()).await.unwrap();
+        let (builder, _client_config) =
+            build_client(service).expect("Failed to build client builder");
+        let client = builder.build().expect("Failed to build client");
+        let request = build_http_request(&client, service).expect("Failed to build request");
+        let response = client
+            .execute(request.build().expect("Failed to build request"))
+            .await
+            .expect("Failed to execute request");
         let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
         // print body
@@ -898,11 +964,11 @@ services:
             "test-max_bytes",
             service,
             response,
-            &ServiceMetrics::new().unwrap(),
+            &ServiceMetrics::new().expect("Failed to create metrics"),
             Arc::clone(&counters),
         )
         .await
-        .unwrap();
+        .expect("Failed to handle response");
 
         assert!(!rs);
     }
@@ -918,14 +984,13 @@ services:
 ---
 services:
   test-max_bytes:
-    url: {}/test
+    url: {mock_url}/test
     every: 30s
     expect:
       status: 200
       body: "34917f37-72b9-403f-887c-20c5e93b7173"
     max_bytes: 64000
-    "#,
-            mock_url
+    "#
         );
 
         let response_body = format!(
@@ -935,7 +1000,10 @@ services:
         );
 
         let config = create_config(&yaml);
-        let service = config.services.get("test-max_bytes").unwrap();
+        let service = config
+            .services
+            .get("test-max_bytes")
+            .expect("Service not found");
 
         let _ = env_logger::try_init();
         let _mock = server
@@ -949,10 +1017,14 @@ services:
             .create_async()
             .await;
 
-        let (builder, _client_config) = build_client(service).unwrap();
-        let client = builder.build().unwrap();
-        let request = build_http_request(&client, service).unwrap();
-        let response = client.execute(request.build().unwrap()).await.unwrap();
+        let (builder, _client_config) =
+            build_client(service).expect("Failed to build client builder");
+        let client = builder.build().expect("Failed to build client");
+        let request = build_http_request(&client, service).expect("Failed to build request");
+        let response = client
+            .execute(request.build().expect("Failed to build request"))
+            .await
+            .expect("Failed to execute request");
         let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
         // print body
@@ -960,11 +1032,11 @@ services:
             "test-max_bytes",
             service,
             response,
-            &ServiceMetrics::new().unwrap(),
+            &ServiceMetrics::new().expect("Failed to create metrics"),
             Arc::clone(&counters),
         )
         .await
-        .unwrap();
+        .expect("Failed to handle response");
 
         assert!(!rs);
     }
@@ -980,13 +1052,12 @@ services:
 ---
 services:
   test-max_bytes:
-    url: {}/test
+    url: {mock_url}/test
     every: 30s
     expect:
       status: 200
       body: "34917f37-72b9-403f-887c-20c5e93b7173"
-    "#,
-            mock_url
+    "#
         );
 
         let response_body = format!(
@@ -997,7 +1068,10 @@ services:
         );
 
         let config = create_config(&yaml);
-        let service = config.services.get("test-max_bytes").unwrap();
+        let service = config
+            .services
+            .get("test-max_bytes")
+            .expect("Service not found");
 
         let _ = env_logger::try_init();
         let _mock = server
@@ -1011,10 +1085,14 @@ services:
             .create_async()
             .await;
 
-        let (builder, _client_config) = build_client(service).unwrap();
-        let client = builder.build().unwrap();
-        let request = build_http_request(&client, service).unwrap();
-        let response = client.execute(request.build().unwrap()).await.unwrap();
+        let (builder, _client_config) =
+            build_client(service).expect("Failed to build client builder");
+        let client = builder.build().expect("Failed to build client");
+        let request = build_http_request(&client, service).expect("Failed to build request");
+        let response = client
+            .execute(request.build().expect("Failed to build request"))
+            .await
+            .expect("Failed to execute request");
         let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
         // print body
@@ -1022,11 +1100,11 @@ services:
             "test-max_bytes",
             service,
             response,
-            &ServiceMetrics::new().unwrap(),
+            &ServiceMetrics::new().expect("Failed to create metrics"),
             Arc::clone(&counters),
         )
         .await
-        .unwrap();
+        .expect("Failed to handle response");
 
         assert!(rs);
     }

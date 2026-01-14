@@ -1,18 +1,18 @@
 use clap::{
-    builder::{
-        styling::{AnsiColor, Effects, Styles},
-        ValueParser,
-    },
     Arg, ArgAction, ColorChoice, Command,
+    builder::{
+        ValueParser,
+        styling::{AnsiColor, Effects, Styles},
+    },
 };
 use std::{env, fs, path::PathBuf};
 
 pub fn validator_is_file() -> ValueParser {
     ValueParser::from(move |s: &str| -> std::result::Result<PathBuf, String> {
-        if let Ok(metadata) = fs::metadata(s) {
-            if metadata.is_file() {
-                return Ok(PathBuf::from(s));
-            }
+        if let Ok(metadata) = fs::metadata(s)
+            && metadata.is_file()
+        {
+            return Ok(PathBuf::from(s));
         }
 
         Err(format!("Invalid file path of file does not exists: '{s}'"))
@@ -59,36 +59,40 @@ pub fn new() -> Command {
 }
 
 #[cfg(test)]
+#[allow(deprecated, clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use anyhow::Result;
     use assert_cmd::Command;
     use predicates::prelude::*;
     use std::fs::File;
     use std::io::Write;
     use tempfile::Builder;
 
-    const CONF: &str = r#"---
+    const CONF: &str = r"---
 services:
   test:
     url: https://epazote.io
     every: 1m
     expect:
       status: 200
-"#;
+";
 
-    fn get_config_dir(config: &str) -> Result<tempfile::TempDir> {
-        let dir = Builder::new().prefix("epazote").tempdir().unwrap();
+    fn get_config_dir(config: &str) -> tempfile::TempDir {
+        let dir = Builder::new()
+            .prefix("epazote")
+            .tempdir()
+            .expect("Failed to create temp dir");
         let file = dir.path().join(config);
-        let mut f = File::create(&file).unwrap();
-        f.write_all(CONF.as_bytes()).unwrap();
-        f.flush().unwrap();
-        Ok(dir)
+        let mut f = File::create(file).expect("Failed to create config file");
+        f.write_all(CONF.as_bytes())
+            .expect("Failed to write to config file");
+        f.flush().expect("Failed to flush config file");
+        dir
     }
 
     #[test]
     fn test_help() {
-        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).expect("Failed to find bin");
         let assert = cmd.arg("--help").assert();
 
         assert.stdout(predicate::str::contains(
@@ -98,7 +102,7 @@ services:
 
     #[test]
     fn test_default_no_config() {
-        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).expect("Failed to find bin");
         let assert = cmd.arg("-c no-config.yml").assert();
 
         assert.stderr(predicate::str::contains(
@@ -107,8 +111,8 @@ services:
     }
 
     #[test]
-    fn test_default_no_config_in_path() -> Result<()> {
-        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap();
+    fn test_default_no_config_in_path() {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).expect("Failed to find bin");
 
         let temp_dir = std::env::temp_dir();
 
@@ -117,86 +121,79 @@ services:
         assert.stderr(predicate::str::contains(
             "Invalid file path of file does not exists",
         ));
-
-        Ok(())
     }
 
     #[test]
-    fn test_defaults() -> Result<()> {
+    fn test_defaults() {
         let matches = new().try_get_matches_from(["epazote"]);
 
         assert!(matches.is_ok());
 
-        let m = matches.unwrap();
+        let m = matches.expect("Matches should be present");
 
         assert_eq!(
-            m.get_one::<PathBuf>("config").map(|p| p.to_str().unwrap()),
+            m.get_one::<PathBuf>("config")
+                .map(|p| p.to_str().expect("Invalid path")),
             Some("epazote.yml")
         );
 
         assert_eq!(m.get_one::<u16>("port").copied(), Some(9080));
 
         assert_eq!(m.get_one::<u8>("verbose").copied(), Some(0));
-
-        Ok(())
     }
 
     #[test]
-    fn test_defaults_no_epazote() -> Result<()> {
+    fn test_defaults_no_epazote() {
         let matches = new().try_get_matches_from(["epazote", "-c", "no-epazote.yml"]);
 
         assert!(matches.is_err());
-
-        Ok(())
     }
 
     #[test]
-    fn test_custom() -> Result<()> {
-        let dir = get_config_dir("custom.yml")?; // Create temp directory with config file
+    fn test_custom() {
+        let dir = get_config_dir("custom.yml"); // Create temp directory with config file
 
         let config_file = dir.path().join("custom.yml");
 
         let matches = new().try_get_matches_from([
             "epazote",
             "-c",
-            config_file.to_str().unwrap(),
+            config_file.to_str().expect("Invalid path"),
             "-p",
             "8080",
         ]);
 
         assert!(matches.is_ok());
 
-        let m = matches.unwrap();
+        let m = matches.expect("Matches should be present");
 
         assert_eq!(
-            m.get_one::<PathBuf>("config").map(|p| p.to_str().unwrap()),
-            Some(config_file.to_str().unwrap())
+            m.get_one::<PathBuf>("config")
+                .map(|p| p.to_str().expect("Invalid path")),
+            Some(config_file.to_str().expect("Invalid path"))
         );
 
         assert_eq!(m.get_one::<u16>("port").copied(), Some(8080));
 
         assert_eq!(m.get_one::<u8>("verbose").copied(), Some(0));
-
-        Ok(())
     }
 
     #[test]
-    fn test_verbose() -> Result<()> {
+    fn test_verbose() {
         let matches = new().try_get_matches_from(["epazote", "-vv"]);
 
         assert!(matches.is_ok());
 
-        let m = matches.unwrap();
+        let m = matches.expect("Matches should be present");
 
         assert_eq!(
-            m.get_one::<PathBuf>("config").map(|p| p.to_str().unwrap()),
+            m.get_one::<PathBuf>("config")
+                .map(|p| p.to_str().expect("Invalid path")),
             Some("epazote.yml")
         );
 
         assert_eq!(m.get_one::<u16>("port").copied(), Some(9080));
 
         assert_eq!(m.get_one::<u8>("verbose").copied(), Some(2));
-
-        Ok(())
     }
 }

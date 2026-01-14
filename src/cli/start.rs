@@ -2,6 +2,10 @@ use crate::cli::{actions::Action, commands, dispatch::handler, telemetry};
 use anyhow::Result;
 
 /// Start the CLI
+///
+/// # Errors
+///
+/// Returns an error if telemetry initialization fails or command handling encounters an issue.
 pub fn start() -> Result<Action> {
     let matches = commands::new().get_matches();
 
@@ -9,13 +13,12 @@ pub fn start() -> Result<Action> {
         0 => None,
         1 => Some(tracing::Level::INFO),
         2 => Some(tracing::Level::DEBUG),
-        3 => Some(tracing::Level::TRACE),
         _ => Some(tracing::Level::TRACE),
     };
 
     telemetry::init(verbosity_level)?;
 
-    let action = handler(&matches)?;
+    let action = handler(&matches);
 
     Ok(action)
 }

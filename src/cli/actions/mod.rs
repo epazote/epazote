@@ -6,7 +6,7 @@ pub mod ssl;
 
 use crate::cli::actions::client::APP_USER_AGENT;
 use crate::cli::config;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::{collections::HashMap, env, path::PathBuf, sync::Arc};
 use tokio::{process::Command, sync::Mutex};
 use tracing::debug;
@@ -39,27 +39,29 @@ async fn execute_fallback_http(url: &str) -> Result<i32> {
 
     let status = response.status();
 
-    Ok(status.as_u16() as i32)
+    Ok(i32::from(status.as_u16()))
 }
 
+use std::hash::BuildHasher;
+
 /// Check if stop limit is reached and if we should continue
-async fn should_continue_fallback(
+async fn should_continue_fallback<S: BuildHasher>(
     service_name: &str,
-    counters: &Arc<Mutex<HashMap<String, usize>>>,
+    counters: &Arc<Mutex<HashMap<String, usize, S>>>,
     action: &config::Action,
 ) -> bool {
     let mut counters = counters.lock().await;
     let count = counters.entry(service_name.to_string()).or_insert(0);
 
     // Check if we should stop processing
-    if let Some(stop) = action.stop {
-        if *count >= stop {
-            debug!(
-                "Service '{}' reached stop limit ({}), skipping fallback",
-                service_name, stop
-            );
-            return false;
-        }
+    if let Some(stop) = action.stop
+        && *count >= stop
+    {
+        debug!(
+            "Service '{}' reached stop limit ({}), skipping fallback",
+            service_name, stop
+        );
+        return false;
     }
 
     *count += 1;
@@ -70,16 +72,21 @@ async fn should_continue_fallback(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use mockito::Server;
 
     #[tokio::test]
     async fn test_execute_fallback_command() {
-        let exit_code = execute_fallback_command("exit 0").await.unwrap();
+        let exit_code = execute_fallback_command("exit 0")
+            .await
+            .expect("Failed to execute command");
         assert_eq!(exit_code, 0);
 
-        let exit_code = execute_fallback_command("exit 1").await.unwrap();
+        let exit_code = execute_fallback_command("exit 1")
+            .await
+            .expect("Failed to execute command");
         assert_eq!(exit_code, 1);
     }
 
@@ -92,13 +99,13 @@ mod tests {
         };
 
         let should_continue = should_continue_fallback("test", &counters, &action).await;
-        assert_eq!(should_continue, true);
+        assert!(should_continue);
 
         let should_continue = should_continue_fallback("test", &counters, &action).await;
-        assert_eq!(should_continue, true);
+        assert!(should_continue);
 
         let should_continue = should_continue_fallback("test", &counters, &action).await;
-        assert_eq!(should_continue, false);
+        assert!(!should_continue);
     }
 
     #[tokio::test]
@@ -108,14 +115,14 @@ mod tests {
 
         let exit_code = execute_fallback_http(format!("{}/status/200", &server.url()).as_str())
             .await
-            .unwrap();
+            .expect("Failed to execute HTTP fallback");
 
         assert_eq!(exit_code, 200);
 
         // bad request
         let exit_code = execute_fallback_http(format!("{}/status/400", &server.url()).as_str())
             .await
-            .unwrap();
+            .expect("Failed to execute HTTP fallback");
 
         assert_eq!(exit_code, 501);
     }
