@@ -1,0 +1,22 @@
+[Unit]
+Description=epazote watchdog runtime
+Documentation=https://github.com/epazote/epazote
+After=local-fs.target network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment="EPAZOTE_CONFIG=/etc/epazote/epazote.yml"
+Environment="EPAZOTE_PORT=9080"
+Environment="EPAZOTE_VERBOSE="
+EnvironmentFile=-/etc/epazote/epazote.env
+ExecStart=/usr/bin/epazote ${EPAZOTE_VERBOSE} --config ${EPAZOTE_CONFIG} --port ${EPAZOTE_PORT}
+Restart=always
+RestartSec=5s
+OOMScoreAdjust=-900
+
+[Install]
+WantedBy=multi-user.target

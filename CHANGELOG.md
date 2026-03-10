@@ -1,6 +1,13 @@
 Changelog
 =========
 
+## 3.0.4
+- Make OTLP tracing opt-in unless an OTLP endpoint is configured.
+- Cache HTTPS certificate expiry checks to avoid repeated TLS handshakes on every probe.
+- Skip missed interval catch-up bursts after scheduler delays.
+- Add packaged `contrib/` assets for systemd deployments, including `.deb` maintainer scripts and `.rpm`/`.deb` service files.
+- Update packaging metadata to install the `epazote` systemd unit and environment file.
+
 ## 3.0.3
 - Rust 2024 edition update.
 - Switch from OpenSSL to Rustls.

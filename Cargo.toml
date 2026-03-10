@@ -71,20 +71,25 @@ webpki = "0.22"
 x509-parser = "0.17"
 
 [dev-dependencies]
-assert_cmd = "2.1"
+assert_cmd = "2.2"
 ctor = "0.6"
 env_logger = "0.11"
 mockito = "1.7"
 predicates = "3.1"
-tempfile = "3.24"
+tempfile = "3.26"
 
 [package.metadata.generate-rpm]
 assets = [
     { source = "target/release/epazote", dest = "/usr/bin/epazote", mode = "0755" },
+    { source = "contrib/systemd/epazote.service", dest = "/etc/systemd/system/epazote.service", mode = "0644" },
+    { source = "contrib/systemd/epazote.env.example", dest = "/etc/epazote/epazote.env", mode = "0640" },
 ]
 
 [package.metadata.deb]
 assets = [
-    { source = "target/release/epazote", dest = "/usr/bin/epazote", mode = "0755" },
+    ["target/release/epazote", "/usr/bin/epazote", "755"],
+    ["contrib/systemd/epazote.service", "/etc/systemd/system/epazote.service", "644"],
+    ["contrib/systemd/epazote.env.example", "/etc/epazote/epazote.env", "640"],
 ]
 depends = ""
+maintainer-scripts = "contrib/debian"

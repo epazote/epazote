@@ -6,7 +6,7 @@ use crate::cli::{
         metrics::{ServiceMetrics, metrics_server},
         request::{build_http_request, handle_http_response},
         should_continue_fallback,
-        ssl::check_ssl_certificate,
+        ssl::{SslCheckCache, check_ssl_certificate, new_ssl_check_cache},
     },
     config::{Config, ServiceDetails},
 };
@@ -16,7 +16,7 @@ use rustls::crypto::CryptoProvider;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::{
     sync::Mutex,
-    time::{Instant, interval},
+    time::{Instant, MissedTickBehavior, interval},
 };
 use tracing::{debug, error, info, instrument};
 
@@ -44,6 +44,7 @@ pub async fn handle(action: Action) -> Result<()> {
 
     // Create service metrics
     let service_metrics = Arc::new(ServiceMetrics::new()?);
+    let ssl_check_cache = new_ssl_check_cache();
 
     let mut service_handles = Vec::new();
 
@@ -53,6 +54,7 @@ pub async fn handle(action: Action) -> Result<()> {
         let service_name = service_name.clone();
         let service_details = service.clone();
         let counters = service_counters.clone();
+        let ssl_cache = ssl_check_cache.clone();
 
         let action = if let Some(ref command) = service_details.test {
             ServiceAction::Command(command.clone())
@@ -76,6 +78,7 @@ pub async fn handle(action: Action) -> Result<()> {
                 metrics,
                 every,
                 counters,
+                ssl_cache,
             )
             .await;
         });
@@ -113,8 +116,10 @@ async fn run_service(
     metrics: Arc<ServiceMetrics>,
     interval_duration: Duration,
     counters: Arc<Mutex<HashMap<String, usize>>>,
+    ssl_cache: SslCheckCache,
 ) {
     let mut interval_timer = interval(interval_duration);
+    interval_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     loop {
         interval_timer.tick().await; // Wait for the next interval
@@ -128,6 +133,7 @@ async fn run_service(
             &action,
             &metrics,
             counters.clone(),
+            &ssl_cache,
         )
         .await
         {
@@ -157,6 +163,7 @@ async fn scan_service(
     action: &ServiceAction,
     metrics: &ServiceMetrics,
     counters: Arc<Mutex<HashMap<String, usize>>>,
+    ssl_cache: &SslCheckCache,
 ) -> Result<()> {
     let start_time = Instant::now();
 
@@ -169,7 +176,7 @@ async fn scan_service(
             let url = request.url().to_string();
 
             if url.starts_with("https://") {
-                check_ssl_certificate(&url, service_name, metrics).await?;
+                check_ssl_certificate(&url, service_name, metrics, ssl_cache).await?;
             }
 
             debug!("HTTP request: {:?}", request);
@@ -316,6 +323,7 @@ mod tests {
         let action = mock_action("exit 0");
         let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
         let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+        let ssl_cache = new_ssl_check_cache();
 
         let result = scan_service(
             "test-service",
@@ -323,6 +331,7 @@ mod tests {
             &action,
             &metrics,
             counters,
+            &ssl_cache,
         )
         .await;
 
@@ -339,6 +348,7 @@ mod tests {
         let action = mock_action("exit 1");
         let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
         let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+        let ssl_cache = new_ssl_check_cache();
 
         let result = scan_service(
             "test-service",
@@ -346,6 +356,7 @@ mod tests {
             &action,
             &metrics,
             Arc::clone(&counters),
+            &ssl_cache,
         )
         .await;
 
@@ -376,6 +387,7 @@ mod tests {
 
         let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
         let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+        let ssl_cache = new_ssl_check_cache();
 
         // First attempt
         let result1 = scan_service(
@@ -384,6 +396,7 @@ mod tests {
             &action,
             &metrics,
             Arc::clone(&counters),
+            &ssl_cache,
         )
         .await;
 
@@ -403,6 +416,7 @@ mod tests {
             &action,
             &metrics,
             Arc::clone(&counters),
+            &ssl_cache,
         )
         .await;
 
@@ -422,6 +436,7 @@ mod tests {
             &action,
             &metrics,
             Arc::clone(&counters),
+            &ssl_cache,
         )
         .await;
 
@@ -454,6 +469,7 @@ mod tests {
 
         let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
         let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+        let ssl_cache = new_ssl_check_cache();
 
         // Run scan_service 100 times
         for _ in 0..100 {
@@ -463,6 +479,7 @@ mod tests {
                 &action,
                 &metrics,
                 Arc::clone(&counters),
+                &ssl_cache,
             )
             .await;
         }
@@ -486,6 +503,7 @@ mod tests {
         let action = mock_action("exit 1");
         let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
         let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+        let ssl_cache = new_ssl_check_cache();
 
         let result = scan_service(
             "test-service",
@@ -493,6 +511,7 @@ mod tests {
             &action,
             &metrics,
             counters,
+            &ssl_cache,
         )
         .await;
         assert!(
@@ -532,6 +551,7 @@ mod tests {
         let action = ServiceAction::Url(Client::new());
         let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
         let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+        let ssl_cache = new_ssl_check_cache();
 
         tokio::spawn(async move {
             run_service(
@@ -541,6 +561,7 @@ mod tests {
                 metrics,
                 Duration::from_millis(100),
                 counters,
+                ssl_cache,
             )
             .await;
         });
