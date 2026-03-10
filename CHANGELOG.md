@@ -1,7 +1,7 @@
 Changelog
 =========
 
-## 3.0.4
+## 3.0.5
 - Make OTLP tracing opt-in unless an OTLP endpoint is configured.
 - Cache HTTPS certificate expiry checks to avoid repeated TLS handshakes on every probe.
 - Skip missed interval catch-up bursts after scheduler delays.
