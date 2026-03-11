@@ -3,14 +3,47 @@ use anyhow::{Context, Result};
 use rustls::ClientConfig;
 use rustls::pki_types::ServerName;
 use std::{
+    collections::HashMap,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::net::TcpStream;
+use tokio::sync::Mutex;
 use tokio_rustls::TlsConnector;
 use tracing::debug;
 use url::Url;
 use x509_parser::parse_x509_certificate;
+
+const SSL_RECHECK_INTERVAL_SECS: u64 = 60 * 60 * 12;
+
+#[derive(Clone, Copy, Debug)]
+pub struct SslCheckState {
+    checked_at_epoch_secs: u64,
+    remaining_secs_at_check: u64,
+}
+
+impl SslCheckState {
+    fn remaining_secs_now(self, now_epoch_secs: u64) -> u64 {
+        let elapsed = now_epoch_secs.saturating_sub(self.checked_at_epoch_secs);
+        self.remaining_secs_at_check.saturating_sub(elapsed)
+    }
+
+    fn should_refresh(self, now_epoch_secs: u64) -> bool {
+        let elapsed = now_epoch_secs.saturating_sub(self.checked_at_epoch_secs);
+        elapsed >= SSL_RECHECK_INTERVAL_SECS || self.remaining_secs_now(now_epoch_secs) == 0
+    }
+}
+
+pub type SslCheckCache = Arc<Mutex<HashMap<String, SslCheckState>>>;
+
+#[must_use]
+pub fn new_ssl_check_cache() -> SslCheckCache {
+    Arc::new(Mutex::new(HashMap::new()))
+}
+
+fn current_epoch_secs() -> Result<u64> {
+    Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
+}
 
 /// Extracts host and port from a URL
 fn extract_host_port(url: &str) -> Result<(String, u16)> {
@@ -94,9 +127,36 @@ pub async fn check_ssl_certificate(
     url: &str,
     service_name: &str,
     metrics: &ServiceMetrics,
+    cache: &SslCheckCache,
 ) -> Result<()> {
+    let now_epoch_secs = current_epoch_secs()?;
+
+    if let Some(cached_state) = {
+        let cache = cache.lock().await;
+        cache.get(service_name).copied()
+    } && !cached_state.should_refresh(now_epoch_secs)
+    {
+        metrics
+            .epazote_ssl_cert_expiry_seconds
+            .with_label_values(&[service_name])
+            .set(cached_state.remaining_secs_now(now_epoch_secs).try_into()?);
+
+        return Ok(());
+    }
+
     let (host, port) = extract_host_port(url)?;
     let remaining = get_cert_expiration_time(host, port).await?;
+
+    {
+        let mut cache = cache.lock().await;
+        cache.insert(
+            service_name.to_string(),
+            SslCheckState {
+                checked_at_epoch_secs: now_epoch_secs,
+                remaining_secs_at_check: remaining,
+            },
+        );
+    }
 
     // Update metrics
     metrics
@@ -152,5 +212,17 @@ mod tests {
         let remaining = get_cert_expiration_time(host, port).await;
         assert!(remaining.is_err());
         Ok(())
+    }
+
+    #[test]
+    fn test_ssl_check_state_uses_cached_value_until_refresh() {
+        let state = SslCheckState {
+            checked_at_epoch_secs: 100,
+            remaining_secs_at_check: 1_000,
+        };
+
+        assert_eq!(state.remaining_secs_now(250), 850);
+        assert!(!state.should_refresh(250));
+        assert!(state.should_refresh(100 + SSL_RECHECK_INTERVAL_SECS));
     }
 }
