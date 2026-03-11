@@ -125,6 +125,7 @@ pub async fn metrics_handler(State(metrics): State<Arc<ServiceMetrics>>) -> impl
 mod tests {
     use super::*;
     use crate::cli::{
+        actions::FallbackState,
         actions::client::build_client,
         actions::request::{build_http_request, handle_http_response},
         config::Config,
@@ -183,7 +184,8 @@ services:
             .execute(request.build().expect("Failed to build request"))
             .await
             .expect("Failed to execute request");
-        let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let metrics =
             Arc::new(ServiceMetrics::new().expect("Failed to initialize service metrics"));
 

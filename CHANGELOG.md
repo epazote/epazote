@@ -1,6 +1,13 @@
 Changelog
 =========
 
+## 3.1.0
+- Add `expect.json` for structured JSON response matching, including nested object and array subset checks.
+- Add `if_not.threshold` to delay fallback actions until a configured number of consecutive failures is reached.
+- Reset the fallback threshold counter after successful checks while keeping `if_not.stop` as the cap for fallback executions.
+- Document `expect.json`, `if_not.threshold`, and the distinction between `threshold` and `stop`.
+- Clarify that `test` and `if_not.cmd` use the current `SHELL`, falling back to `sh`.
+
 ## 3.0.5
 - Make OTLP tracing opt-in unless an OTLP endpoint is configured.
 - Cache HTTPS certificate expiry checks to avoid repeated TLS handshakes on every probe.

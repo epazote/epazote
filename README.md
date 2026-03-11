@@ -25,6 +25,45 @@ services:
                 cmd: systemctl restart app
 ```
 
+## Match JSON responses
+
+```yaml
+services:
+    vmagent_targets:
+        url: http://127.0.0.1:8429/api/v1/targets
+        every: 30s
+        expect:
+            status: 200
+            json:
+                status: success
+                data:
+                    activeTargets:
+                        - labels:
+                            job: DBMI-lab-nico
+                          health: up
+```
+
+`expect.body` still performs text or regex matching against the raw response body. Use `expect.json` for structured JSON subset matching.
+
+## Delay Fallback Actions With `threshold`
+
+```yaml
+services:
+    vmagent_targets:
+        url: http://127.0.0.1:8429/api/v1/targets
+        every: 30s
+        expect:
+            status: 200
+            json:
+                status: success
+            if_not:
+                threshold: 3
+                stop: 2
+                cmd: systemctl restart vmagent
+```
+
+`threshold` waits for N consecutive failures before running `if_not` actions. `stop` limits how many times those fallback actions will be executed after the threshold is reached.
+
 ## Run Epazote
 
     epazote -c epazote.yml
