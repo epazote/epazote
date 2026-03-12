@@ -1,6 +1,12 @@
 Changelog
 =========
 
+## 3.2.0
+- Pass `EPAZOTE_*` environment variables to `if_not.cmd` fallback scripts, including service name, failure reason, status, and threshold context.
+- Default to pretty human-readable logs and add `--json-logs` for structured JSON output.
+- Log failed expectation checks as `WARN` instead of `INFO`.
+- Use compact pretty logs for successful HTTP checks and include response headers only for failed checks.
+
 ## 3.1.0
 - Add `expect.json` for structured JSON response matching, including nested object and array subset checks.
 - Add `if_not.threshold` to delay fallback actions until a configured number of consecutive failures is reached.

@@ -56,6 +56,12 @@ pub fn new() -> Command {
                 .help("Increase verbosity, -vv for debug")
                 .action(ArgAction::Count),
         )
+        .arg(
+            Arg::new("json-logs")
+                .long("json-logs")
+                .help("Emit logs in JSON format")
+                .action(ArgAction::SetTrue),
+        )
 }
 
 #[cfg(test)]
@@ -140,6 +146,7 @@ services:
         assert_eq!(m.get_one::<u16>("port").copied(), Some(9080));
 
         assert_eq!(m.get_one::<u8>("verbose").copied(), Some(0));
+        assert!(!m.get_flag("json-logs"));
     }
 
     #[test]
@@ -176,11 +183,12 @@ services:
         assert_eq!(m.get_one::<u16>("port").copied(), Some(8080));
 
         assert_eq!(m.get_one::<u8>("verbose").copied(), Some(0));
+        assert!(!m.get_flag("json-logs"));
     }
 
     #[test]
     fn test_verbose() {
-        let matches = new().try_get_matches_from(["epazote", "-vv"]);
+        let matches = new().try_get_matches_from(["epazote", "-vv", "--json-logs"]);
 
         assert!(matches.is_ok());
 
@@ -195,5 +203,6 @@ services:
         assert_eq!(m.get_one::<u16>("port").copied(), Some(9080));
 
         assert_eq!(m.get_one::<u8>("verbose").copied(), Some(2));
+        assert!(m.get_flag("json-logs"));
     }
 }

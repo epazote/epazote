@@ -8,6 +8,7 @@ use anyhow::Result;
 /// Returns an error if telemetry initialization fails or command handling encounters an issue.
 pub fn start() -> Result<Action> {
     let matches = commands::new().get_matches();
+    let json_logs = matches.get_flag("json-logs");
 
     let verbosity_level = match matches.get_count("verbose") {
         0 => None,
@@ -16,7 +17,7 @@ pub fn start() -> Result<Action> {
         _ => Some(tracing::Level::TRACE),
     };
 
-    telemetry::init(verbosity_level)?;
+    telemetry::init(verbosity_level, json_logs)?;
 
     let action = handler(&matches);
 
