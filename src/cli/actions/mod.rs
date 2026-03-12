@@ -16,6 +16,12 @@ pub enum Action {
     Run { config: PathBuf, port: u16 },
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct FallbackState {
+    pub consecutive_failures: usize,
+    pub fallback_executions: usize,
+}
+
 /// Call the fallback command if the service is not reachable
 async fn execute_fallback_command(cmd: &str) -> Result<i32> {
     let shell = env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
@@ -47,15 +53,25 @@ use std::hash::BuildHasher;
 /// Check if stop limit is reached and if we should continue
 async fn should_continue_fallback<S: BuildHasher>(
     service_name: &str,
-    counters: &Arc<Mutex<HashMap<String, usize, S>>>,
+    counters: &Arc<Mutex<HashMap<String, FallbackState, S>>>,
     action: &config::Action,
 ) -> bool {
     let mut counters = counters.lock().await;
-    let count = counters.entry(service_name.to_string()).or_insert(0);
+    let state = counters.entry(service_name.to_string()).or_default();
+    state.consecutive_failures += 1;
+
+    let threshold = action.threshold.unwrap_or(1);
+    if state.consecutive_failures < threshold {
+        debug!(
+            "Service '{}' failure count {}/{} below threshold, skipping fallback",
+            service_name, state.consecutive_failures, threshold
+        );
+        return false;
+    }
 
     // Check if we should stop processing
     if let Some(stop) = action.stop
-        && *count >= stop
+        && state.fallback_executions >= stop
     {
         debug!(
             "Service '{}' reached stop limit ({}), skipping fallback",
@@ -64,11 +80,19 @@ async fn should_continue_fallback<S: BuildHasher>(
         return false;
     }
 
-    *count += 1;
-
-    drop(counters); // Explicitly drop the lock
+    state.fallback_executions += 1;
 
     true
+}
+
+async fn reset_fallback_state<S: BuildHasher>(
+    service_name: &str,
+    counters: &Arc<Mutex<HashMap<String, FallbackState, S>>>,
+) {
+    let mut counters = counters.lock().await;
+    if let Some(state) = counters.get_mut(service_name) {
+        state.consecutive_failures = 0;
+    }
 }
 
 #[cfg(test)]
@@ -76,6 +100,7 @@ async fn should_continue_fallback<S: BuildHasher>(
 mod tests {
     use super::*;
     use mockito::Server;
+    use std::{fs, os::unix::fs::PermissionsExt};
 
     #[tokio::test]
     async fn test_execute_fallback_command() {
@@ -88,6 +113,28 @@ mod tests {
             .await
             .expect("Failed to execute command");
         assert_eq!(exit_code, 1);
+    }
+
+    #[tokio::test]
+    async fn test_execute_fallback_command_runs_executable_script() {
+        let tempdir = tempfile::Builder::new()
+            .prefix("epazote-script-dir-")
+            .tempdir_in(".")
+            .expect("Failed to create temp dir");
+        let script_path = tempdir.path().join("script.sh");
+        fs::write(&script_path, "#!/bin/sh\nexit 7\n").expect("Failed to write script");
+
+        let mut permissions = fs::metadata(&script_path)
+            .expect("Failed to stat script")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("Failed to chmod script");
+
+        let exit_code = execute_fallback_command(script_path.to_str().expect("Invalid path"))
+            .await
+            .expect("Failed to execute script");
+
+        assert_eq!(exit_code, 7);
     }
 
     #[tokio::test]
@@ -106,6 +153,38 @@ mod tests {
 
         let should_continue = should_continue_fallback("test", &counters, &action).await;
         assert!(!should_continue);
+    }
+
+    #[tokio::test]
+    async fn test_should_continue_fallback_threshold() {
+        let counters = Arc::new(Mutex::new(HashMap::new()));
+        let action = config::Action {
+            threshold: Some(3),
+            ..Default::default()
+        };
+
+        assert!(!should_continue_fallback("test", &counters, &action).await);
+        assert!(!should_continue_fallback("test", &counters, &action).await);
+        assert!(should_continue_fallback("test", &counters, &action).await);
+
+        let counters = counters.lock().await;
+        let state = counters.get("test").expect("State not found");
+        assert_eq!(state.consecutive_failures, 3);
+        assert_eq!(state.fallback_executions, 1);
+    }
+
+    #[tokio::test]
+    async fn test_reset_fallback_state() {
+        let counters = Arc::new(Mutex::new(HashMap::new()));
+        let action = config::Action {
+            threshold: Some(2),
+            ..Default::default()
+        };
+
+        assert!(!should_continue_fallback("test", &counters, &action).await);
+        reset_fallback_state("test", &counters).await;
+        assert!(!should_continue_fallback("test", &counters, &action).await);
+        assert!(should_continue_fallback("test", &counters, &action).await);
     }
 
     #[tokio::test]

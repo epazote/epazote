@@ -1,11 +1,11 @@
 use crate::cli::{
     actions::{
-        Action,
+        Action, FallbackState,
         client::build_client,
         execute_fallback_command, execute_fallback_http,
         metrics::{ServiceMetrics, metrics_server},
         request::{build_http_request, handle_http_response},
-        should_continue_fallback,
+        reset_fallback_state, should_continue_fallback,
         ssl::{SslCheckCache, check_ssl_certificate, new_ssl_check_cache},
     },
     config::{Config, ServiceDetails},
@@ -48,7 +48,8 @@ pub async fn handle(action: Action) -> Result<()> {
 
     let mut service_handles = Vec::new();
 
-    let service_counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+    let service_counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 
     for (service_name, service) in &config.services {
         let service_name = service_name.clone();
@@ -115,7 +116,7 @@ async fn run_service(
     action: ServiceAction,
     metrics: Arc<ServiceMetrics>,
     interval_duration: Duration,
-    counters: Arc<Mutex<HashMap<String, usize>>>,
+    counters: Arc<Mutex<HashMap<String, FallbackState>>>,
     ssl_cache: SslCheckCache,
 ) {
     let mut interval_timer = interval(interval_duration);
@@ -162,7 +163,7 @@ async fn scan_service(
     service_details: &ServiceDetails,
     action: &ServiceAction,
     metrics: &ServiceMetrics,
-    counters: Arc<Mutex<HashMap<String, usize>>>,
+    counters: Arc<Mutex<HashMap<String, FallbackState>>>,
     ssl_cache: &SslCheckCache,
 ) -> Result<()> {
     let start_time = Instant::now();
@@ -201,8 +202,9 @@ async fn scan_service(
 
             let exit_status = execute_fallback_command(command).await.unwrap_or(1);
 
-            if exit_status != i32::from(service_details.expect.status)
-                && let Some(action) = &service_details.expect.if_not
+            if exit_status == i32::from(service_details.expect.status) {
+                reset_fallback_state(service_name, &counters).await;
+            } else if let Some(action) = &service_details.expect.if_not
                 && should_continue_fallback(service_name, &counters, action).await
             {
                 if let Some(cmd) = &action.cmd {
@@ -248,6 +250,7 @@ mod tests {
                 status: expect_status,
                 header: None,
                 body: None,
+                json: None,
                 if_not: if_not.map(|cmd| Action {
                     cmd: Some(cmd.to_string()),
                     ..Default::default()
@@ -322,7 +325,8 @@ mod tests {
         let service_details = mock_service_details(Some("exit 0"), 0, None);
         let action = mock_action("exit 0");
         let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
-        let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let ssl_cache = new_ssl_check_cache();
 
         let result = scan_service(
@@ -347,7 +351,8 @@ mod tests {
         let service_details = mock_service_details(Some("exit 1"), 0, Some("echo 'Fallback'"));
         let action = mock_action("exit 1");
         let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
-        let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let ssl_cache = new_ssl_check_cache();
 
         let result = scan_service(
@@ -366,7 +371,9 @@ mod tests {
         );
 
         let counters_locked = counters.lock().await;
-        let count = counters_locked.get("test-service").copied().unwrap_or(0);
+        let count = counters_locked
+            .get("test-service")
+            .map_or(0, |state| state.fallback_executions);
 
         assert_eq!(count, 1, "Counter should have been incremented");
     }
@@ -386,7 +393,8 @@ mod tests {
             .stop = Some(2);
 
         let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
-        let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let ssl_cache = new_ssl_check_cache();
 
         // First attempt
@@ -405,7 +413,9 @@ mod tests {
         // Check counter after first attempt
         let count1 = {
             let counters_locked = counters.lock().await;
-            *counters_locked.get("test-service").unwrap_or(&0)
+            counters_locked
+                .get("test-service")
+                .map_or(0, |state| state.fallback_executions)
         };
         assert_eq!(count1, 1, "Counter should be 1 after first attempt");
 
@@ -425,7 +435,9 @@ mod tests {
         // Check counter after second attempt
         let count2 = {
             let counters_locked = counters.lock().await;
-            *counters_locked.get("test-service").unwrap_or(&0)
+            counters_locked
+                .get("test-service")
+                .map_or(0, |state| state.fallback_executions)
         };
         assert_eq!(count2, 2, "Counter should be 2 after second attempt");
 
@@ -448,9 +460,167 @@ mod tests {
         // Check counter after third attempt (should remain at 2)
         let count3 = {
             let counters_locked = counters.lock().await;
-            *counters_locked.get("test-service").unwrap_or(&0)
+            counters_locked
+                .get("test-service")
+                .map_or(0, |state| state.fallback_executions)
         };
         assert_eq!(count3, 2, "Counter should remain at 2 after third attempt");
+    }
+
+    #[tokio::test]
+    async fn test_scan_service_command_threshold_delays_fallback() {
+        let mut service_details = mock_service_details(Some("exit 1"), 0, Some("echo 'Fallback'"));
+        let action = mock_action("exit 1");
+
+        service_details
+            .expect
+            .if_not
+            .as_mut()
+            .expect("if_not should be present")
+            .threshold = Some(3);
+
+        let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let ssl_cache = new_ssl_check_cache();
+
+        for expected_executions in [0, 0, 1] {
+            let result = scan_service(
+                "test-service",
+                &service_details,
+                &action,
+                &metrics,
+                Arc::clone(&counters),
+                &ssl_cache,
+            )
+            .await;
+
+            assert!(result.is_ok(), "Scan service should complete");
+
+            let counters_locked = counters.lock().await;
+            let state = counters_locked
+                .get("test-service")
+                .expect("State not found");
+            assert_eq!(state.fallback_executions, expected_executions);
+            drop(counters_locked);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_scan_service_command_success_resets_threshold_counter() {
+        let mut service_details = mock_service_details(Some("exit 1"), 0, Some("echo 'Fallback'"));
+        service_details
+            .expect
+            .if_not
+            .as_mut()
+            .expect("if_not should be present")
+            .threshold = Some(2);
+
+        let failing_action = mock_action("exit 1");
+        let success_action = mock_action("exit 0");
+        let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let ssl_cache = new_ssl_check_cache();
+
+        let first_failure = scan_service(
+            "test-service",
+            &service_details,
+            &failing_action,
+            &metrics,
+            Arc::clone(&counters),
+            &ssl_cache,
+        )
+        .await;
+        assert!(first_failure.is_ok());
+
+        let success = scan_service(
+            "test-service",
+            &service_details,
+            &success_action,
+            &metrics,
+            Arc::clone(&counters),
+            &ssl_cache,
+        )
+        .await;
+        assert!(success.is_ok());
+
+        let second_failure = scan_service(
+            "test-service",
+            &service_details,
+            &failing_action,
+            &metrics,
+            Arc::clone(&counters),
+            &ssl_cache,
+        )
+        .await;
+        assert!(second_failure.is_ok());
+
+        let counters_locked = counters.lock().await;
+        let state = counters_locked
+            .get("test-service")
+            .expect("State not found");
+        assert_eq!(state.consecutive_failures, 1);
+        assert_eq!(state.fallback_executions, 0);
+    }
+
+    #[tokio::test]
+    async fn test_scan_service_command_stop_does_not_reset_after_success() {
+        let mut service_details = mock_service_details(Some("exit 1"), 0, Some("echo 'Fallback'"));
+        let if_not = service_details
+            .expect
+            .if_not
+            .as_mut()
+            .expect("if_not should be present");
+        if_not.threshold = Some(1);
+        if_not.stop = Some(1);
+
+        let failing_action = mock_action("exit 1");
+        let success_action = mock_action("exit 0");
+        let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let ssl_cache = new_ssl_check_cache();
+
+        let first_failure = scan_service(
+            "test-service",
+            &service_details,
+            &failing_action,
+            &metrics,
+            Arc::clone(&counters),
+            &ssl_cache,
+        )
+        .await;
+        assert!(first_failure.is_ok());
+
+        let success = scan_service(
+            "test-service",
+            &service_details,
+            &success_action,
+            &metrics,
+            Arc::clone(&counters),
+            &ssl_cache,
+        )
+        .await;
+        assert!(success.is_ok());
+
+        let second_failure = scan_service(
+            "test-service",
+            &service_details,
+            &failing_action,
+            &metrics,
+            Arc::clone(&counters),
+            &ssl_cache,
+        )
+        .await;
+        assert!(second_failure.is_ok());
+
+        let counters_locked = counters.lock().await;
+        let state = counters_locked
+            .get("test-service")
+            .expect("State not found");
+        assert_eq!(state.fallback_executions, 1);
+        assert_eq!(state.consecutive_failures, 1);
     }
 
     /// Test: Scan Service Command - Ensure counter can reach 1000 when no stop condition is set
@@ -468,7 +638,8 @@ mod tests {
             .stop = None;
 
         let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
-        let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let ssl_cache = new_ssl_check_cache();
 
         // Run scan_service 100 times
@@ -487,7 +658,9 @@ mod tests {
         // Check that counter reached 1000
         let final_count = {
             let counters_locked = counters.lock().await;
-            *counters_locked.get("test-service").unwrap_or(&0)
+            counters_locked
+                .get("test-service")
+                .map_or(0, |state| state.fallback_executions)
         };
 
         assert_eq!(
@@ -502,7 +675,8 @@ mod tests {
         let service_details = mock_service_details(Some("exit 1"), 0, Some("echo 'Fallback'"));
         let action = mock_action("exit 1");
         let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
-        let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let ssl_cache = new_ssl_check_cache();
 
         let result = scan_service(
@@ -536,6 +710,7 @@ mod tests {
                 status: 200,
                 header: None,
                 body: None,
+                json: None,
                 if_not: None,
             },
             follow_redirects: Some(true),
@@ -550,7 +725,8 @@ mod tests {
 
         let action = ServiceAction::Url(Client::new());
         let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
-        let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let ssl_cache = new_ssl_check_cache();
 
         tokio::spawn(async move {
