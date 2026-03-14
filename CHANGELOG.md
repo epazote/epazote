@@ -1,6 +1,14 @@
 Changelog
 =========
 
+## 3.3.0
+- Add native support for environment variables in CLI arguments (e.g., `EPAZOTE_VERBOSE`, `EPAZOTE_CONFIG`, `EPAZOTE_PORT`, `EPAZOTE_JSON_LOGS`) directly via `clap` `env` feature mappings.
+- Update `contrib/systemd/epazote.service` to utilize CLI environment variables instead of explicitly passing command line arguments.
+- Greatly optimize CPU and memory usage by entirely removing lock contention on tracking states across concurrent tasks.
+- Prevent repeated TLS handshakes during fallback operations by utilizing a globally shared `reqwest::Client` connection pool via `LazyLock`.
+- Improve runtime performance and avoid process-level OS lock micro-pauses by lazily fetching and caching the `SHELL` environment variable.
+- Eliminate unnecessary heap memory allocations by converting `FallbackContext` to use strict string references (`&str`) during context generation.
+
 ## 3.2.0
 - Pass `EPAZOTE_*` environment variables to `if_not.cmd` fallback scripts, including service name, failure reason, status, and threshold context.
 - Default to pretty human-readable logs and add `--json-logs` for structured JSON output.

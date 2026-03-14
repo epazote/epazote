@@ -48,13 +48,13 @@ pub async fn handle(action: Action) -> Result<()> {
 
     let mut service_handles = Vec::new();
 
-    let service_counters: Arc<Mutex<HashMap<String, FallbackState>>> =
-        Arc::new(Mutex::new(HashMap::new()));
-
     for (service_name, service) in &config.services {
+        let service_counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
         let service_name = service_name.clone();
         let service_details = service.clone();
-        let counters = service_counters.clone();
+        let counters = service_counters;
         let ssl_cache = ssl_check_cache.clone();
 
         let action = if let Some(ref command) = service_details.test {
@@ -193,14 +193,14 @@ async fn scan_service(
                             .await
                             .unwrap_or_default();
                         let context = FallbackContext {
-                            service_name: service_name.to_string(),
+                            service_name,
                             service_type: FallbackServiceType::Http,
                             expected_status: i32::from(service_details.expect.status),
                             actual_status: None,
-                            error: "request_error".to_string(),
+                            error: "request_error",
                             failure_count: state.consecutive_failures,
                             threshold: action.threshold.unwrap_or(1),
-                            url: Some(url),
+                            url: Some(&url),
                             test: None,
                         };
 
@@ -251,15 +251,15 @@ async fn scan_service(
                     .await
                     .unwrap_or_default();
                 let context = FallbackContext {
-                    service_name: service_name.to_string(),
+                    service_name,
                     service_type: FallbackServiceType::Command,
                     expected_status: i32::from(service_details.expect.status),
                     actual_status: Some(exit_status),
-                    error: "command_failed".to_string(),
+                    error: "command_failed",
                     failure_count: state.consecutive_failures,
                     threshold: action.threshold.unwrap_or(1),
                     url: None,
-                    test: Some(command.clone()),
+                    test: Some(command),
                 };
 
                 if let Some(cmd) = &action.cmd {

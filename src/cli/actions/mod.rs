@@ -7,7 +7,7 @@ pub mod ssl;
 use crate::cli::actions::client::APP_USER_AGENT;
 use crate::cli::config;
 use anyhow::{Result, anyhow};
-use std::{collections::HashMap, env, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, env, path::PathBuf, sync::Arc, sync::LazyLock};
 use tokio::{process::Command, sync::Mutex};
 use tracing::debug;
 
@@ -38,28 +38,28 @@ impl FallbackServiceType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FallbackContext {
-    pub service_name: String,
+pub struct FallbackContext<'a> {
+    pub service_name: &'a str,
     pub service_type: FallbackServiceType,
     pub expected_status: i32,
     pub actual_status: Option<i32>,
-    pub error: String,
+    pub error: &'a str,
     pub failure_count: usize,
     pub threshold: usize,
-    pub url: Option<String>,
-    pub test: Option<String>,
+    pub url: Option<&'a str>,
+    pub test: Option<&'a str>,
 }
 
-impl FallbackContext {
+impl FallbackContext<'_> {
     fn env_vars(&self) -> Vec<(&'static str, String)> {
         let mut vars = vec![
-            ("EPAZOTE_SERVICE_NAME", self.service_name.clone()),
+            ("EPAZOTE_SERVICE_NAME", self.service_name.to_string()),
             (
                 "EPAZOTE_SERVICE_TYPE",
                 self.service_type.as_env_value().to_string(),
             ),
             ("EPAZOTE_EXPECTED_STATUS", self.expected_status.to_string()),
-            ("EPAZOTE_ERROR", self.error.clone()),
+            ("EPAZOTE_ERROR", self.error.to_string()),
             ("EPAZOTE_FAILURE_COUNT", self.failure_count.to_string()),
             ("EPAZOTE_THRESHOLD", self.threshold.to_string()),
         ];
@@ -68,21 +68,23 @@ impl FallbackContext {
             vars.push(("EPAZOTE_ACTUAL_STATUS", actual_status.to_string()));
         }
 
-        if let Some(url) = &self.url {
-            vars.push(("EPAZOTE_URL", url.clone()));
+        if let Some(url) = self.url {
+            vars.push(("EPAZOTE_URL", url.to_string()));
         }
 
-        if let Some(test) = &self.test {
-            vars.push(("EPAZOTE_TEST", test.clone()));
+        if let Some(test) = self.test {
+            vars.push(("EPAZOTE_TEST", test.to_string()));
         }
 
         vars
     }
 }
 
-async fn execute_shell_command(cmd: &str, context: Option<&FallbackContext>) -> Result<i32> {
-    let shell = env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
-    let mut command = Command::new(shell);
+static SYSTEM_SHELL: LazyLock<String> =
+    LazyLock::new(|| env::var("SHELL").unwrap_or_else(|_| "sh".to_string()));
+
+async fn execute_shell_command(cmd: &str, context: Option<&FallbackContext<'_>>) -> Result<i32> {
+    let mut command = Command::new(SYSTEM_SHELL.as_str());
     command.arg("-c").arg(cmd);
 
     if let Some(context) = context {
@@ -104,17 +106,23 @@ pub(crate) async fn execute_command(cmd: &str) -> Result<i32> {
 }
 
 /// Call the fallback command if the service is not reachable
-pub(crate) async fn execute_fallback_command(cmd: &str, context: &FallbackContext) -> Result<i32> {
+pub(crate) async fn execute_fallback_command(
+    cmd: &str,
+    context: &FallbackContext<'_>,
+) -> Result<i32> {
     execute_shell_command(cmd, Some(context)).await
 }
 
+static FALLBACK_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .user_agent(APP_USER_AGENT)
+        .build()
+        .unwrap_or_default()
+});
+
 /// Call the fallback HTTP request if the service is not reachable
 async fn execute_fallback_http(url: &str) -> Result<i32> {
-    let client = reqwest::Client::builder()
-        .user_agent(APP_USER_AGENT)
-        .build()?;
-
-    let response = client.get(url).send().await?;
+    let response = FALLBACK_HTTP_CLIENT.get(url).send().await?;
 
     let status = response.status();
 
@@ -212,15 +220,15 @@ mod tests {
         fs::set_permissions(&script_path, permissions).expect("Failed to chmod script");
 
         let context = FallbackContext {
-            service_name: "test".to_string(),
+            service_name: "test",
             service_type: FallbackServiceType::Command,
             expected_status: 0,
             actual_status: Some(1),
-            error: "command_failed".to_string(),
+            error: "command_failed",
             failure_count: 1,
             threshold: 1,
             url: None,
-            test: Some("exit 1".to_string()),
+            test: Some("exit 1"),
         };
 
         let exit_code =
@@ -260,14 +268,14 @@ mod tests {
         fs::set_permissions(&script_path, permissions).expect("Failed to chmod script");
 
         let context = FallbackContext {
-            service_name: "vmagent".to_string(),
+            service_name: "vmagent",
             service_type: FallbackServiceType::Http,
             expected_status: 200,
             actual_status: Some(503),
-            error: "status_mismatch".to_string(),
+            error: "status_mismatch",
             failure_count: 3,
             threshold: 3,
-            url: Some("http://127.0.0.1:8429/api/v1/targets".to_string()),
+            url: Some("http://127.0.0.1:8429/api/v1/targets"),
             test: None,
         };
 

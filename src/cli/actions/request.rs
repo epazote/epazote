@@ -215,18 +215,18 @@ pub async fn handle_http_response<S: BuildHasher>(
             .await
             .unwrap_or_default();
         let context = FallbackContext {
-            service_name: service_name.to_string(),
+            service_name,
             service_type: FallbackServiceType::Http,
             expected_status: i32::from(service_details.expect.status),
             actual_status: Some(actual_status),
             error: if status_matches {
-                body_mismatch_reason.unwrap_or("request_error").to_string()
+                body_mismatch_reason.unwrap_or("request_error")
             } else {
-                "status_mismatch".to_string()
+                "status_mismatch"
             },
             failure_count: state.consecutive_failures,
             threshold: action.threshold.unwrap_or(1),
-            url: service_details.url.clone(),
+            url: service_details.url.as_deref(),
             test: None,
         };
 
