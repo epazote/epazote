@@ -264,7 +264,10 @@ async fn scan_service(
 
                 if let Some(cmd) = &action.cmd {
                     let exit_code = execute_fallback_command(cmd, &context).await?;
-                    debug!("Fallback action executed with exit code: {}", exit_code);
+                    info!(
+                        "Executed fallback command for {} with exit code {}",
+                        service_name, exit_code
+                    );
                 }
 
                 if let Some(http) = &action.http {

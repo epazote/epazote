@@ -9,7 +9,7 @@ use crate::cli::config;
 use anyhow::{Result, anyhow};
 use std::{collections::HashMap, env, path::PathBuf, sync::Arc, sync::LazyLock};
 use tokio::{process::Command, sync::Mutex};
-use tracing::debug;
+use tracing::{info, warn};
 
 #[derive(Debug)]
 pub enum Action {
@@ -143,7 +143,7 @@ async fn should_continue_fallback<S: BuildHasher>(
 
     let threshold = action.threshold.unwrap_or(1);
     if state.consecutive_failures < threshold {
-        debug!(
+        warn!(
             "Service '{}' failure count {}/{} below threshold, skipping fallback",
             service_name, state.consecutive_failures, threshold
         );
@@ -154,7 +154,7 @@ async fn should_continue_fallback<S: BuildHasher>(
     if let Some(stop) = action.stop
         && state.fallback_executions >= stop
     {
-        debug!(
+        warn!(
             "Service '{}' reached stop limit ({}), skipping fallback",
             service_name, stop
         );
@@ -162,6 +162,15 @@ async fn should_continue_fallback<S: BuildHasher>(
     }
 
     state.fallback_executions += 1;
+
+    let stop_info = action
+        .stop
+        .map_or_else(|| "unlimited".to_string(), |s| s.to_string());
+
+    info!(
+        "Service '{}' threshold reached ({}/{}), executing fallback (execution #{}/{})",
+        service_name, state.consecutive_failures, threshold, state.fallback_executions, stop_info
+    );
 
     true
 }

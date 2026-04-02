@@ -1,6 +1,6 @@
 [package]
 name = "epazote"
-version = "3.3.0"
+version = "3.3.1"
 authors = ["Nicolas Embriz <nbari@tequila.io>"]
 description = "Automated HTTP (microservices) supervisor 🌿"
 documentation = "https://docs.rs/epazote/latest/epazote/"
@@ -45,7 +45,7 @@ large_stack_arrays = "deny"
 anyhow = "1"
 axum = "0.8"
 chrono = "0.4"
-clap = { version = "4.5", features = ["env"] }
+clap = { version = "4.6", features = ["env"] }
 futures = "0.3"
 futures-util = "0.3"
 ignore = "0.4"

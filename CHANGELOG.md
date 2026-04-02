@@ -1,6 +1,12 @@
 Changelog
 =========
 
+## 3.3.1 (2026-04-02)
+- Improve fallback logging visibility by promoting threshold and stop limit messages from DEBUG to WARN/INFO levels for better operational awareness.
+- Add execution counter display in fallback logs showing current execution number vs stop limit (e.g., "execution #1/3" or "execution #5/unlimited").
+- Standardize fallback command logging across HTTP and command checks to consistently use INFO level.
+- Update dependencies: clap 4.5 → 4.6, plus 54 transitive dependency updates including security patches for rustls-webpki and other critical components.
+
 ## 3.3.0
 - Add native support for environment variables in CLI arguments (e.g., `EPAZOTE_VERBOSE`, `EPAZOTE_CONFIG`, `EPAZOTE_PORT`, `EPAZOTE_JSON_LOGS`) directly via `clap` `env` feature mappings.
 - Update `contrib/systemd/epazote.service` to utilize CLI environment variables instead of explicitly passing command line arguments.
