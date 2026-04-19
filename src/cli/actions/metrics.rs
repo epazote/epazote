@@ -193,14 +193,12 @@ services:
         let initial_status = metrics
             .epazote_status
             .get_metric_with_label_values(&["test"])
-            .map(|m| m.get())
-            .unwrap_or(0);
+            .map_or(0, |m| m.get());
 
         let initial_failures = metrics
             .epazote_failures_total
             .get_metric_with_label_values(&["test"])
-            .map(|m| m.get())
-            .unwrap_or(0);
+            .map_or(0, |m| m.get());
 
         let rs = handle_http_response("test", service, response, &metrics, counters.clone()).await;
 
@@ -210,14 +208,12 @@ services:
         let updated_status = metrics
             .epazote_status
             .get_metric_with_label_values(&["test"])
-            .map(|m| m.get())
-            .unwrap_or(0);
+            .map_or(0, |m| m.get());
 
         let updated_failures = metrics
             .epazote_failures_total
             .get_metric_with_label_values(&["test"])
-            .map(|m| m.get())
-            .unwrap_or(0);
+            .map_or(0, |m| m.get());
 
         assert_ne!(
             initial_status, updated_status,
@@ -257,8 +253,7 @@ services:
         let updated_status = metrics
             .epazote_status
             .get_metric_with_label_values(&["test"])
-            .map(|m| m.get())
-            .unwrap_or(0);
+            .map_or(0, |m| m.get());
 
         assert_eq!(
             updated_status, 0,

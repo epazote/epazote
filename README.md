@@ -64,11 +64,44 @@ services:
 
 `threshold` waits for N consecutive failures before running `if_not` actions. `stop` limits how many times those fallback actions will be executed after the threshold is reached.
 
+## Use `EPAZOTE_*` Variables In `if_not.cmd`
+
+Fallback commands receive service context through environment variables, which makes alert scripts easier to write:
+
+```yaml
+services:
+    vmagent_targets:
+        url: http://127.0.0.1:8429/api/v1/targets
+        every: 30s
+        expect:
+            status: 200
+            json:
+                status: success
+            if_not:
+                threshold: 3
+                stop: 1
+                cmd: /usr/local/bin/send-alert.sh
+```
+
+Available variables:
+
+- `EPAZOTE_SERVICE_NAME`
+- `EPAZOTE_SERVICE_TYPE`
+- `EPAZOTE_URL` for HTTP checks
+- `EPAZOTE_TEST` for command checks
+- `EPAZOTE_EXPECTED_STATUS`
+- `EPAZOTE_ACTUAL_STATUS` when available
+- `EPAZOTE_ERROR`
+- `EPAZOTE_FAILURE_COUNT`
+- `EPAZOTE_THRESHOLD`
+
 ## Run Epazote
 
     epazote -c epazote.yml
 
 > default configuration file is `epazote.yml`
+
+Logs are pretty-printed by default for easier debugging. Use `--json-logs` if you want structured JSON logs instead.
 
 
 https://epazote.io

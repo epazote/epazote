@@ -1,6 +1,38 @@
 Changelog
 =========
 
+## 3.4.0 (2026-04-19)
+- **OOM Protection**: Introduce a safe default limit of **512KB** for `max_bytes` to prevent memory exhaustion on large HTTP responses.
+- **UTF-8 Bug Fix**: Fix high-severity bug in `match_response_body` where multi-byte characters split across network chunks caused data loss.
+- **CPU Optimization**: 
+    - Eliminate redundant `.*` padding in regex patterns for plain substring matches.
+    - Switch to O(N) regex evaluation (single match at end of stream) instead of O(N²) eager matching on every chunk.
+    - Cache `rustls::RootCertStore` in a static `LazyLock` to avoid synchronous certificate loading on every SSL check task.
+- **Resilience**: Implement a supervision model where the main process exits gracefully if any service monitoring task fails, enabling external managers (like systemd) to restart the process.
+- **Connection Stewardship**: Explicitly consume response bodies in fallback HTTP requests to ensure TCP connections are returned to the pool immediately.
+- **Dependency Updates**: Update all dependencies to latest versions, including `ctor` 0.6 → 0.10.
+- **Linting**: Full compliance with **Rust 1.95** Clippy pedantic and safety-critical lints.
+
+## 3.3.1 (2026-04-02)
+- Improve fallback logging visibility by promoting threshold and stop limit messages from DEBUG to WARN/INFO levels for better operational awareness.
+- Add execution counter display in fallback logs showing current execution number vs stop limit (e.g., "execution #1/3" or "execution #5/unlimited").
+- Standardize fallback command logging across HTTP and command checks to consistently use INFO level.
+- Update dependencies: clap 4.5 → 4.6, plus 54 transitive dependency updates including security patches for rustls-webpki and other critical components.
+
+## 3.3.0
+- Add native support for environment variables in CLI arguments (e.g., `EPAZOTE_VERBOSE`, `EPAZOTE_CONFIG`, `EPAZOTE_PORT`, `EPAZOTE_JSON_LOGS`) directly via `clap` `env` feature mappings.
+- Update `contrib/systemd/epazote.service` to utilize CLI environment variables instead of explicitly passing command line arguments.
+- Greatly optimize CPU and memory usage by entirely removing lock contention on tracking states across concurrent tasks.
+- Prevent repeated TLS handshakes during fallback operations by utilizing a globally shared `reqwest::Client` connection pool via `LazyLock`.
+- Improve runtime performance and avoid process-level OS lock micro-pauses by lazily fetching and caching the `SHELL` environment variable.
+- Eliminate unnecessary heap memory allocations by converting `FallbackContext` to use strict string references (`&str`) during context generation.
+
+## 3.2.0
+- Pass `EPAZOTE_*` environment variables to `if_not.cmd` fallback scripts, including service name, failure reason, status, and threshold context.
+- Default to pretty human-readable logs and add `--json-logs` for structured JSON output.
+- Log failed expectation checks as `WARN` instead of `INFO`.
+- Use compact pretty logs for successful HTTP checks and include response headers only for failed checks.
+
 ## 3.1.0
 - Add `expect.json` for structured JSON response matching, including nested object and array subset checks.
 - Add `if_not.threshold` to delay fallback actions until a configured number of consecutive failures is reached.

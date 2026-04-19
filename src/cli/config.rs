@@ -112,7 +112,7 @@ pub struct ServiceDetails {
 
     pub headers: Option<HashMap<String, String>>,
 
-    #[serde(rename = "max_bytes")]
+    #[serde(rename = "max_bytes", default = "default_max_bytes")]
     pub max_bytes: Option<usize>,
 
     pub test: Option<String>,
@@ -185,6 +185,12 @@ const fn default_timeout() -> Duration {
     Duration::from_secs(5)
 }
 
+// Default max bytes to read from response (512KB)
+#[allow(clippy::unnecessary_wraps)]
+const fn default_max_bytes() -> Option<usize> {
+    Some(524_288)
+}
+
 /// Parses a duration string (e.g., "5s", "3m", "1h", "2d") into a Duration.
 fn parse_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where
@@ -235,15 +241,15 @@ mod tests {
         );
         assert_eq!(
             parse_duration_str("3m").expect("Failed to parse duration"),
-            Duration::from_secs(180)
+            Duration::from_mins(3)
         );
         assert_eq!(
             parse_duration_str("1h").expect("Failed to parse duration"),
-            Duration::from_secs(3600)
+            Duration::from_hours(1)
         );
         assert_eq!(
             parse_duration_str("2d").expect("Failed to parse duration"),
-            Duration::from_secs(172_800)
+            Duration::from_hours(48)
         );
     }
 
@@ -318,6 +324,15 @@ services:
                 .expect("Service not found")
                 .follow_redirects,
             None
+        );
+
+        assert_eq!(
+            config
+                .services
+                .get("test")
+                .expect("Service not found")
+                .max_bytes,
+            Some(524_288) // 512KB default
         );
     }
 
