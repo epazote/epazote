@@ -263,59 +263,12 @@ async fn match_response_body(
         e
     })?;
 
-    let mut buffer = String::new();
-    let mut stream = response.bytes_stream();
-    let max_bytes = max_bytes.unwrap_or(usize::MAX);
-    let mut total_bytes_read = 0;
+    let body = collect_response_bytes(response, max_bytes).await?;
+    let text = String::from_utf8_lossy(&body);
 
-    while let Some(chunk) = stream.next().await {
-        match chunk {
-            Ok(bytes) => {
-                let chunk_size = bytes.len();
-                let remaining_bytes = max_bytes.saturating_sub(total_bytes_read);
-
-                debug!(
-                    "Read chunk of size: {}, remaining bytes: {}, total bytes read: {}",
-                    chunk_size, remaining_bytes, total_bytes_read
-                );
-
-                if remaining_bytes == 0 {
-                    break;
-                }
-
-                let limited_chunk = if chunk_size > remaining_bytes {
-                    bytes.get(..remaining_bytes).unwrap_or(&bytes)
-                } else {
-                    &bytes
-                };
-
-                if let Ok(text) = std::str::from_utf8(limited_chunk) {
-                    buffer.push_str(text);
-                }
-
-                total_bytes_read += limited_chunk.len();
-
-                if regex.is_match(&buffer) {
-                    debug!(
-                        "Match found in response body: {}, total bytes read: {}",
-                        buffer, total_bytes_read
-                    );
-                    return Ok(true);
-                }
-
-                if total_bytes_read >= max_bytes {
-                    debug!(
-                        "Max bytes limit reached: {}, total bytes read: {}, body: {}",
-                        max_bytes, total_bytes_read, buffer
-                    );
-                    break;
-                }
-            }
-            Err(e) => {
-                error!("Failed to read chunk: {}", e);
-                return Ok(false);
-            }
-        }
+    if regex.is_match(&text) {
+        debug!("Match found in response body");
+        return Ok(true);
     }
 
     Ok(false)
@@ -410,7 +363,7 @@ fn generate_regex_pattern(input: &str) -> Result<Regex> {
 
     let pattern = trimmed_input.strip_prefix("r\"").map_or_else(
         // Escape the input to prevent regex injection
-        || format!(r".*{}.*", regex::escape(trimmed_input)),
+        || regex::escape(trimmed_input),
         // If prefix exists, strip suffix and use raw regex
         |raw| raw.strip_suffix('"').unwrap_or(raw).to_string(),
     );
@@ -500,9 +453,9 @@ mod tests {
 
     #[test]
     fn test_generate_regex_pattern() {
-        // Normal input should be escaped and wrapped in ".* .*"
+        // Normal input should be escaped
         let pattern = generate_regex_pattern("test").expect("Failed to generate regex pattern");
-        assert_eq!(pattern.as_str(), r".*test.*");
+        assert_eq!(pattern.as_str(), "test");
 
         // Raw regex should be extracted without modification
         let pattern =
@@ -522,8 +475,8 @@ mod tests {
         // Standard input should be escaped
         let pattern =
             generate_regex_pattern("hello world").expect("Failed to generate regex pattern");
-        assert_eq!(pattern.as_str(), r".*hello world.*"); // Space should be escaped
-        //
+        assert_eq!(pattern.as_str(), "hello world");
+
         // Ensure regex matching works
         assert!(pattern.is_match("this is a hello world test"));
         assert!(!pattern.is_match("this is a goodbye test"));
@@ -531,10 +484,36 @@ mod tests {
         // the . should be escaped
         let pattern =
             generate_regex_pattern("hello.world").expect("Failed to generate regex pattern");
-        assert_eq!(pattern.as_str(), r".*hello\.world.*"); // Space should be escaped
+        assert_eq!(pattern.as_str(), "hello\\.world");
         //
         let pattern = generate_regex_pattern("a+b*").expect("Failed to generate regex pattern");
-        assert_eq!(pattern.as_str(), r".*a\+b\*.*"); // Space should be escaped
+        assert_eq!(pattern.as_str(), "a\\+b\\*");
+    }
+
+    #[test]
+    fn test_regex_matching_behavior() {
+        // 1. Test plain substring (should be unanchored/match anywhere)
+        let pattern = generate_regex_pattern("findme").expect("Failed to generate regex");
+        assert!(pattern.is_match("here is findme in the middle"));
+        assert!(pattern.is_match("findme at the start"));
+        assert!(pattern.is_match("at the end findme"));
+        assert!(!pattern.is_match("nowhere to be found"));
+
+        // 2. Test raw regex with anchors
+        let pattern = generate_regex_pattern(r#"r"^start""#).expect("Failed to generate regex");
+        assert!(pattern.is_match("start of string"));
+        assert!(!pattern.is_match("not the start of string"));
+
+        // 3. Test raw regex with case insensitivity
+        let pattern = generate_regex_pattern(r#"r"(?i)apple""#).expect("Failed to generate regex");
+        assert!(pattern.is_match("I like Apple"));
+        assert!(pattern.is_match("apple pie"));
+        assert!(!pattern.is_match("orange juice"));
+
+        // 4. Test raw regex with word boundaries
+        let pattern = generate_regex_pattern(r#"r"\bcat\b""#).expect("Failed to generate regex");
+        assert!(pattern.is_match("the cat is here"));
+        assert!(!pattern.is_match("category is feline"));
     }
 
     #[test]
@@ -2025,5 +2004,256 @@ services:
         .expect("Failed to handle response");
 
         assert!(rs);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_expect_body_utf8_multibyte() {
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r#"
+---
+services:
+  test-utf8:
+    url: {mock_url}/test
+    every: 30s
+    expect:
+      status: 200
+      body: "epazote 🌿"
+    "#
+        );
+
+        let config = create_config(&yaml);
+        let service = config.services.get("test-utf8").expect("Service not found");
+
+        let _mock = server
+            .mock("GET", "/test")
+            .with_body("Automated HTTP supervisor: epazote 🌿")
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let response = client.get(format!("{mock_url}/test")).send().await.unwrap();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let rs = handle_http_response(
+            "test-utf8",
+            service,
+            response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+
+        assert!(rs);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_expect_body_max_bytes_exact_match() {
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+        let body_str = "0123456789";
+
+        let yaml = format!(
+            r#"
+---
+services:
+  test-exact:
+    url: {mock_url}/test
+    every: 30s
+    expect:
+      status: 200
+      body: "89"
+    max_bytes: 10
+    "#
+        );
+
+        let config = create_config(&yaml);
+        let service = config
+            .services
+            .get("test-exact")
+            .expect("Service not found");
+
+        let _mock = server
+            .mock("GET", "/test")
+            .with_body(body_str)
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let response = client.get(format!("{mock_url}/test")).send().await.unwrap();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let rs = handle_http_response(
+            "test-exact",
+            service,
+            response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+
+        assert!(rs);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_expect_body_max_bytes_too_small() {
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+        let body_str = "0123456789ABCDEF";
+
+        let yaml = format!(
+            r#"
+---
+services:
+  test-small:
+    url: {mock_url}/test
+    every: 30s
+    expect:
+      status: 200
+      body: "ABC"
+    max_bytes: 5
+    "#
+        );
+
+        let config = create_config(&yaml);
+        let service = config
+            .services
+            .get("test-small")
+            .expect("Service not found");
+
+        let _mock = server
+            .mock("GET", "/test")
+            .with_body(body_str)
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let response = client.get(format!("{mock_url}/test")).send().await.unwrap();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let rs = handle_http_response(
+            "test-small",
+            service,
+            response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+
+        // Should fail because "ABC" is at index 10, but we only read 5 bytes
+        assert!(!rs);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_expect_json_max_bytes_limit() {
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+        let body_json =
+            r#"{"status":"success","data":"some long data that we might want to truncate"}"#;
+
+        let yaml = format!(
+            r"
+---
+services:
+  test-json-limit:
+    url: {mock_url}/test
+    every: 30s
+    expect:
+      status: 200
+      json:
+        status: success
+    max_bytes: 10
+    "
+        );
+
+        let config = create_config(&yaml);
+        let service = config
+            .services
+            .get("test-json-limit")
+            .expect("Service not found");
+
+        let _mock = server
+            .mock("GET", "/test")
+            .with_body(body_json)
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let response = client.get(format!("{mock_url}/test")).send().await.unwrap();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let rs = handle_http_response(
+            "test-json-limit",
+            service,
+            response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+
+        // Should fail because we only read 10 bytes, so the JSON is invalid/incomplete
+        assert!(!rs);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_expect_body_max_bytes_zero() {
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r#"
+---
+services:
+  test-zero:
+    url: {mock_url}/test
+    every: 30s
+    expect:
+      status: 200
+      body: "anything"
+    max_bytes: 0
+    "#
+        );
+
+        let config = create_config(&yaml);
+        let service = config.services.get("test-zero").expect("Service not found");
+
+        let _mock = server
+            .mock("GET", "/test")
+            .with_body("some content")
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let response = client.get(format!("{mock_url}/test")).send().await.unwrap();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let rs = handle_http_response(
+            "test-zero",
+            service,
+            response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+
+        // Should fail because we read 0 bytes
+        assert!(!rs);
     }
 }

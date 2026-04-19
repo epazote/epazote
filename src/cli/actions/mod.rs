@@ -126,6 +126,9 @@ async fn execute_fallback_http(url: &str) -> Result<i32> {
 
     let status = response.status();
 
+    // Consume the body to release the connection back to the pool
+    let _ = response.bytes().await;
+
     Ok(i32::from(status.as_u16()))
 }
 

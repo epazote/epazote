@@ -98,8 +98,11 @@ pub async fn handle(action: Action) -> Result<()> {
 
     // Wait for all tasks to complete
     tokio::select! {
-        _ = futures::future::join_all(service_handles) => {
-            error!("All service monitoring tasks completed unexpectedly");
+        (result, _, _) = futures::future::select_all(service_handles) => {
+            match result {
+                Ok(()) => error!("A service monitoring task completed unexpectedly"),
+                Err(e) => error!("A service monitoring task panicked: {}", e),
+            }
         },
         _ = metrics_server_handle => {
             error!("Metrics server stopped unexpectedly");

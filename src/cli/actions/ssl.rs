@@ -5,8 +5,18 @@ use rustls::pki_types::ServerName;
 use std::{
     collections::HashMap,
     sync::Arc,
+    sync::LazyLock,
     time::{SystemTime, UNIX_EPOCH},
 };
+
+static ROOT_CERT_STORE: LazyLock<rustls::RootCertStore> = LazyLock::new(|| {
+    let mut roots = rustls::RootCertStore::empty();
+
+    for cert in rustls_native_certs::load_native_certs().expect("could not load platform certs") {
+        let _ = roots.add(cert);
+    }
+    roots
+});
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_rustls::TlsConnector;
@@ -60,15 +70,9 @@ fn extract_host_port(url: &str) -> Result<(String, u16)> {
 
 /// Retrieves the SSL certificate expiration time in seconds
 async fn get_cert_expiration_time(host: String, port: u16) -> Result<u64> {
-    let mut roots = rustls::RootCertStore::empty();
-
-    for cert in rustls_native_certs::load_native_certs().expect("could not load platform certs") {
-        roots.add(cert)?;
-    }
-
     // Configure TLS client
     let config = ClientConfig::builder()
-        .with_root_certificates(roots)
+        .with_root_certificates(ROOT_CERT_STORE.clone())
         .with_no_client_auth();
 
     let connector = TlsConnector::from(Arc::new(config));

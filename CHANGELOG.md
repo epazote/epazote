@@ -1,6 +1,18 @@
 Changelog
 =========
 
+## 3.4.0 (2026-04-19)
+- **OOM Protection**: Introduce a safe default limit of **512KB** for `max_bytes` to prevent memory exhaustion on large HTTP responses.
+- **UTF-8 Bug Fix**: Fix high-severity bug in `match_response_body` where multi-byte characters split across network chunks caused data loss.
+- **CPU Optimization**: 
+    - Eliminate redundant `.*` padding in regex patterns for plain substring matches.
+    - Switch to O(N) regex evaluation (single match at end of stream) instead of O(N²) eager matching on every chunk.
+    - Cache `rustls::RootCertStore` in a static `LazyLock` to avoid synchronous certificate loading on every SSL check task.
+- **Resilience**: Implement a supervision model where the main process exits gracefully if any service monitoring task fails, enabling external managers (like systemd) to restart the process.
+- **Connection Stewardship**: Explicitly consume response bodies in fallback HTTP requests to ensure TCP connections are returned to the pool immediately.
+- **Dependency Updates**: Update all dependencies to latest versions, including `ctor` 0.6 → 0.10.
+- **Linting**: Full compliance with **Rust 1.95** Clippy pedantic and safety-critical lints.
+
 ## 3.3.1 (2026-04-02)
 - Improve fallback logging visibility by promoting threshold and stop limit messages from DEBUG to WARN/INFO levels for better operational awareness.
 - Add execution counter display in fallback logs showing current execution number vs stop limit (e.g., "execution #1/3" or "execution #5/unlimited").

@@ -3,6 +3,7 @@ services:
   myip:
     url: https://www.myip.country
     every: 30s
+    max_bytes: 1024
     headers:
       user-agent: sopas
     expect:
