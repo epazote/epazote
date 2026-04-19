@@ -228,3 +228,76 @@ services:
         "Fallback command was not executed (marker file not found)"
     );
 }
+
+#[tokio::test]
+async fn test_epazote_if_not_threshold_integration() {
+    let mut server = mockito::Server::new_async().await;
+    let mock_url = server.url();
+
+    let _m = server
+        .mock("GET", "/fail-threshold")
+        .with_status(500)
+        .create_async()
+        .await;
+
+    let marker_file = tempfile::NamedTempFile::new().expect("Failed to create marker file");
+    let marker_path = marker_file.path().to_owned();
+    std::fs::remove_file(&marker_path).expect("Failed to remove initial marker file");
+
+    let config_content = format!(
+        r"
+services:
+  fail_service:
+    url: {mock_url}/fail-threshold
+    every: 1s
+    expect:
+      status: 200
+      if_not:
+        threshold: 3
+        stop: 1
+        cmd: touch {}
+",
+        marker_path.to_str().expect("Invalid marker path")
+    );
+
+    let config_file = NamedTempFile::new().expect("Failed to create config file");
+    std::fs::write(config_file.path(), config_content).expect("Failed to write config");
+
+    let metrics_port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+
+    let mut cmd = Command::cargo_bin("epazote").expect("Failed to find binary");
+
+    let mut child = cmd
+        .arg("-c")
+        .arg(config_file.path())
+        .arg("-p")
+        .arg(metrics_port.to_string())
+        .spawn()
+        .expect("Failed to start epazote");
+
+    sleep(Duration::from_secs(2)).await;
+    assert!(
+        !marker_path.exists(),
+        "Fallback command executed before threshold was reached"
+    );
+
+    let mut success = false;
+    for _ in 0..5 {
+        sleep(Duration::from_secs(1)).await;
+        if marker_path.exists() {
+            success = true;
+            break;
+        }
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(
+        success,
+        "Fallback command was not executed after threshold was reached"
+    );
+}

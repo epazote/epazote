@@ -125,6 +125,7 @@ pub async fn metrics_handler(State(metrics): State<Arc<ServiceMetrics>>) -> impl
 mod tests {
     use super::*;
     use crate::cli::{
+        actions::FallbackState,
         actions::client::build_client,
         actions::request::{build_http_request, handle_http_response},
         config::Config,
@@ -183,7 +184,8 @@ services:
             .execute(request.build().expect("Failed to build request"))
             .await
             .expect("Failed to execute request");
-        let counters: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let metrics =
             Arc::new(ServiceMetrics::new().expect("Failed to initialize service metrics"));
 
@@ -191,14 +193,12 @@ services:
         let initial_status = metrics
             .epazote_status
             .get_metric_with_label_values(&["test"])
-            .map(|m| m.get())
-            .unwrap_or(0);
+            .map_or(0, |m| m.get());
 
         let initial_failures = metrics
             .epazote_failures_total
             .get_metric_with_label_values(&["test"])
-            .map(|m| m.get())
-            .unwrap_or(0);
+            .map_or(0, |m| m.get());
 
         let rs = handle_http_response("test", service, response, &metrics, counters.clone()).await;
 
@@ -208,14 +208,12 @@ services:
         let updated_status = metrics
             .epazote_status
             .get_metric_with_label_values(&["test"])
-            .map(|m| m.get())
-            .unwrap_or(0);
+            .map_or(0, |m| m.get());
 
         let updated_failures = metrics
             .epazote_failures_total
             .get_metric_with_label_values(&["test"])
-            .map(|m| m.get())
-            .unwrap_or(0);
+            .map_or(0, |m| m.get());
 
         assert_ne!(
             initial_status, updated_status,
@@ -255,8 +253,7 @@ services:
         let updated_status = metrics
             .epazote_status
             .get_metric_with_label_values(&["test"])
-            .map(|m| m.get())
-            .unwrap_or(0);
+            .map_or(0, |m| m.get());
 
         assert_eq!(
             updated_status, 0,

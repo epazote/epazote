@@ -112,7 +112,7 @@ pub struct ServiceDetails {
 
     pub headers: Option<HashMap<String, String>>,
 
-    #[serde(rename = "max_bytes")]
+    #[serde(rename = "max_bytes", default = "default_max_bytes")]
     pub max_bytes: Option<usize>,
 
     pub test: Option<String>,
@@ -139,7 +139,7 @@ impl ServiceDetails {
         match (&self.url, &self.test) {
             (Some(_), Some(_)) => Err(anyhow!("Service cannot have both 'url' and 'test'.")),
             (None, None) => Err(anyhow!("Service must have either 'url' or 'test'.")),
-            _ => Ok(()), // Now expect is always required
+            _ => self.expect.validate(),
         }
     }
 }
@@ -149,9 +149,27 @@ pub struct Expect {
     pub status: u16, // Use for both HTTP & text exit codes
     pub header: Option<HashMap<String, String>>,
     pub body: Option<String>,
+    pub json: Option<serde_json::Value>,
 
     #[serde(rename = "if_not")]
     pub if_not: Option<Action>,
+}
+
+impl Expect {
+    /// Validates that the response expectation is internally consistent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if incompatible expectation types are configured together.
+    pub fn validate(&self) -> Result<()> {
+        if self.body.is_some() && self.json.is_some() {
+            return Err(anyhow!(
+                "Expect cannot have both 'body' and 'json' configured."
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Default, Debug, Deserialize, Clone)]
@@ -159,11 +177,18 @@ pub struct Action {
     pub cmd: Option<String>,
     pub http: Option<String>,
     pub stop: Option<usize>,
+    pub threshold: Option<usize>,
 }
 
 // Default timeout value
 const fn default_timeout() -> Duration {
     Duration::from_secs(5)
+}
+
+// Default max bytes to read from response (512KB)
+#[allow(clippy::unnecessary_wraps)]
+const fn default_max_bytes() -> Option<usize> {
+    Some(524_288)
 }
 
 /// Parses a duration string (e.g., "5s", "3m", "1h", "2d") into a Duration.
@@ -216,15 +241,15 @@ mod tests {
         );
         assert_eq!(
             parse_duration_str("3m").expect("Failed to parse duration"),
-            Duration::from_secs(180)
+            Duration::from_mins(3)
         );
         assert_eq!(
             parse_duration_str("1h").expect("Failed to parse duration"),
-            Duration::from_secs(3600)
+            Duration::from_hours(1)
         );
         assert_eq!(
             parse_duration_str("2d").expect("Failed to parse duration"),
-            Duration::from_secs(172_800)
+            Duration::from_hours(48)
         );
     }
 
@@ -299,6 +324,15 @@ services:
                 .expect("Service not found")
                 .follow_redirects,
             None
+        );
+
+        assert_eq!(
+            config
+                .services
+                .get("test")
+                .expect("Service not found")
+                .max_bytes,
+            Some(524_288) // 512KB default
         );
     }
 
@@ -413,5 +447,97 @@ services:
         let body = service.body.as_ref().expect("Body not found");
 
         assert_eq!(body, &BodyType::Json(expected_json));
+    }
+
+    #[test]
+    fn test_expect_json() {
+        let yaml = r"
+---
+services:
+  test:
+    url: https://epazote.io
+    every: 30s
+    expect:
+      status: 200
+      json:
+        status: success
+        data:
+          activeTargets:
+            - health: up
+    ";
+
+        let tmp_file = create_config(yaml);
+        let config_file = tmp_file.path().to_path_buf();
+        let config = Config::new(config_file).expect("Failed to load config");
+
+        let expected_json = json!({
+            "status": "success",
+            "data": {
+                "activeTargets": [
+                    { "health": "up" }
+                ]
+            }
+        });
+
+        let service = config.services.get("test").expect("Service not found");
+        let body = service
+            .expect
+            .json
+            .as_ref()
+            .expect("JSON expectation not found");
+
+        assert_eq!(body, &expected_json);
+    }
+
+    #[test]
+    fn test_expect_body_and_json_are_mutually_exclusive() {
+        let yaml = r"
+---
+services:
+  test:
+    url: https://epazote.io
+    every: 30s
+    expect:
+      status: 200
+      body: success
+      json:
+        status: success
+    ";
+
+        let tmp_file = create_config(yaml);
+        let config_file = tmp_file.path().to_path_buf();
+        let config = Config::new(config_file);
+
+        assert!(config.is_err());
+    }
+
+    #[test]
+    fn test_expect_if_not_threshold_and_stop() {
+        let yaml = r"
+---
+services:
+  test:
+    url: https://epazote.io
+    every: 30s
+    expect:
+      status: 200
+      json:
+        status: success
+      if_not:
+        threshold: 3
+        stop: 2
+        cmd: systemctl restart test
+    ";
+
+        let tmp_file = create_config(yaml);
+        let config_file = tmp_file.path().to_path_buf();
+        let config = Config::new(config_file).expect("Failed to load config");
+
+        let service = config.services.get("test").expect("Service not found");
+        let if_not = service.expect.if_not.as_ref().expect("if_not not found");
+
+        assert_eq!(if_not.threshold, Some(3));
+        assert_eq!(if_not.stop, Some(2));
+        assert_eq!(if_not.cmd.as_deref(), Some("systemctl restart test"));
     }
 }

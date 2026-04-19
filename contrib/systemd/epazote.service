@@ -11,9 +11,9 @@ User=root
 Group=root
 Environment="EPAZOTE_CONFIG=/etc/epazote/epazote.yml"
 Environment="EPAZOTE_PORT=9080"
-Environment="EPAZOTE_VERBOSE="
+Environment="EPAZOTE_VERBOSE=1"
 EnvironmentFile=-/etc/epazote/epazote.env
-ExecStart=/usr/bin/epazote ${EPAZOTE_VERBOSE} --config ${EPAZOTE_CONFIG} --port ${EPAZOTE_PORT}
+ExecStart=/usr/bin/epazote
 Restart=always
 RestartSec=5s
 OOMScoreAdjust=-900
