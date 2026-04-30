@@ -25,6 +25,13 @@ enum ServiceAction {
     Command(String),
 }
 
+fn expected_command_status(service_details: &ServiceDetails) -> Result<i32> {
+    service_details
+        .expect
+        .expected_status_i32()
+        .ok_or_else(|| anyhow!("Command checks require expect.status"))
+}
+
 /// Handle the create action
 ///
 /// # Errors
@@ -198,7 +205,7 @@ async fn scan_service(
                         let context = FallbackContext {
                             service_name,
                             service_type: FallbackServiceType::Http,
-                            expected_status: i32::from(service_details.expect.status),
+                            expected_status: service_details.expect.expected_status_i32(),
                             actual_status: None,
                             error: "request_error",
                             failure_count: state.consecutive_failures,
@@ -244,8 +251,9 @@ async fn scan_service(
             debug!("Executing command: {}", command);
 
             let exit_status = execute_command(command).await.unwrap_or(1);
+            let expected_status = expected_command_status(service_details)?;
 
-            if exit_status == i32::from(service_details.expect.status) {
+            if exit_status == expected_status {
                 reset_fallback_state(service_name, &counters).await;
             } else if let Some(action) = &service_details.expect.if_not
                 && should_continue_fallback(service_name, &counters, action).await
@@ -256,7 +264,7 @@ async fn scan_service(
                 let context = FallbackContext {
                     service_name,
                     service_type: FallbackServiceType::Command,
-                    expected_status: i32::from(service_details.expect.status),
+                    expected_status: Some(expected_status),
                     actual_status: Some(exit_status),
                     error: "command_failed",
                     failure_count: state.consecutive_failures,
@@ -308,9 +316,10 @@ mod tests {
         ServiceDetails {
             every: Duration::from_secs(1),
             expect: Expect {
-                status: expect_status,
+                status: Some(expect_status),
                 header: None,
                 body: None,
+                body_not: None,
                 json: None,
                 if_not: if_not.map(|cmd| Action {
                     cmd: Some(cmd.to_string()),
@@ -739,9 +748,10 @@ mod tests {
         let service_details = ServiceDetails {
             every: Duration::from_secs(1),
             expect: Expect {
-                status: 200,
+                status: Some(200),
                 header: None,
                 body: None,
+                body_not: None,
                 json: None,
                 if_not: Some(Action {
                     cmd: Some(script_path),
@@ -939,9 +949,10 @@ mod tests {
         let service_details = ServiceDetails {
             every: Duration::from_secs(1),
             expect: Expect {
-                status: 200,
+                status: Some(200),
                 header: None,
                 body: None,
+                body_not: None,
                 json: None,
                 if_not: None,
             },

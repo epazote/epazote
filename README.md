@@ -45,6 +45,21 @@ services:
 
 `expect.body` still performs text or regex matching against the raw response body. Use `expect.json` for structured JSON subset matching.
 
+## Reject Matching Response Bodies
+
+```yaml
+services:
+    alloy_metrics:
+        url: http://127.0.0.1:12345/metrics
+        every: 30s
+        expect:
+            body_not: r"error|failure|Fatal"
+            if_not:
+                cmd: /script/when/failure.sh
+```
+
+`expect.body_not` uses the same text or `r"..."` regex matching as `expect.body`, but the service fails when the pattern is found. HTTP checks may omit `expect.status` when another matcher such as `body_not` is configured.
+
 ## Delay Fallback Actions With `threshold`
 
 ```yaml

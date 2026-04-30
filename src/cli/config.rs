@@ -139,6 +139,9 @@ impl ServiceDetails {
         match (&self.url, &self.test) {
             (Some(_), Some(_)) => Err(anyhow!("Service cannot have both 'url' and 'test'.")),
             (None, None) => Err(anyhow!("Service must have either 'url' or 'test'.")),
+            (None, Some(_)) if self.expect.status.is_none() => Err(anyhow!(
+                "Command checks using 'test' must configure 'expect.status'."
+            )),
             _ => self.expect.validate(),
         }
     }
@@ -146,9 +149,11 @@ impl ServiceDetails {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Expect {
-    pub status: u16, // Use for both HTTP & text exit codes
+    pub status: Option<u16>, // Use for both HTTP & text exit codes
     pub header: Option<HashMap<String, String>>,
     pub body: Option<String>,
+    #[serde(rename = "body_not")]
+    pub body_not: Option<String>,
     pub json: Option<serde_json::Value>,
 
     #[serde(rename = "if_not")]
@@ -156,6 +161,16 @@ pub struct Expect {
 }
 
 impl Expect {
+    #[must_use]
+    pub fn status_matches(&self, actual_status: u16) -> bool {
+        self.status.is_none_or(|status| status == actual_status)
+    }
+
+    #[must_use]
+    pub fn expected_status_i32(&self) -> Option<i32> {
+        self.status.map(i32::from)
+    }
+
     /// Validates that the response expectation is internally consistent.
     ///
     /// # Errors
@@ -165,6 +180,16 @@ impl Expect {
         if self.body.is_some() && self.json.is_some() {
             return Err(anyhow!(
                 "Expect cannot have both 'body' and 'json' configured."
+            ));
+        }
+
+        if self.status.is_none()
+            && self.body.is_none()
+            && self.body_not.is_none()
+            && self.json.is_none()
+        {
+            return Err(anyhow!(
+                "Expect must configure at least one of 'status', 'body', 'body_not', or 'json'."
             ));
         }
 
@@ -303,7 +328,7 @@ services:
                 .expect("Service not found")
                 .expect
                 .status,
-            200
+            Some(200)
         );
 
         // check method
@@ -487,6 +512,47 @@ services:
             .expect("JSON expectation not found");
 
         assert_eq!(body, &expected_json);
+    }
+
+    #[test]
+    fn test_expect_body_not() {
+        let yaml = r"
+---
+services:
+  test:
+    url: https://epazote.io
+    every: 30s
+    expect:
+      body_not: Failure
+    ";
+
+        let tmp_file = create_config(yaml);
+        let config_file = tmp_file.path().to_path_buf();
+        let config = Config::new(config_file).expect("Failed to load config");
+
+        let service = config.services.get("test").expect("Service not found");
+
+        assert_eq!(service.expect.body_not.as_deref(), Some("Failure"));
+        assert_eq!(service.expect.status, None);
+    }
+
+    #[test]
+    fn test_command_expect_requires_status() {
+        let yaml = r"
+---
+services:
+  test:
+    test: pgrep -x nginx
+    every: 30s
+    expect:
+      body_not: Failure
+    ";
+
+        let tmp_file = create_config(yaml);
+        let config_file = tmp_file.path().to_path_buf();
+        let config = Config::new(config_file);
+
+        assert!(config.is_err());
     }
 
     #[test]
