@@ -1,0 +1,14 @@
+[tools]
+eza = "latest"
+bat = "latest"
+ripgrep = "latest"
+fd = "latest"
+delta = "latest"
+just = "latest"
+fzf = "latest"
+direnv = "latest"
+"github:nbari/slick" = "latest"
+
+[env]
+EDITOR = "nvim"
+VISUAL = "nvim"

@@ -21,6 +21,10 @@ use tracing::{debug, error, info, warn};
 
 use std::hash::BuildHasher;
 
+fn format_expected_status(status: Option<u16>) -> String {
+    status.map_or_else(|| "any".to_string(), |status| status.to_string())
+}
+
 fn format_headers(headers: &HeaderMap<HeaderValue>) -> String {
     if headers.is_empty() {
         return "(none)".to_string();
@@ -48,10 +52,11 @@ fn format_http_response_success_log(
     service_name: &str,
     service_url: Option<&String>,
     service_status: u16,
-    expected_status: u16,
+    expected_status: Option<u16>,
     matches: bool,
 ) -> String {
     let service_url = service_url.map_or("(none)", String::as_str);
+    let expected_status = format_expected_status(expected_status);
 
     format!(
         "service_name: \"{service_name}\", service_url: \"{service_url}\", service_status: {service_status}, expected_status: {expected_status}, matches: {matches}"
@@ -62,11 +67,12 @@ fn format_http_response_failure_log(
     service_name: &str,
     service_url: Option<&String>,
     service_status: u16,
-    expected_status: u16,
+    expected_status: Option<u16>,
     headers: &HeaderMap<HeaderValue>,
     matches: bool,
 ) -> String {
     let service_url = service_url.map_or("(none)", String::as_str);
+    let expected_status = format_expected_status(expected_status);
 
     format!(
         "service_name: \"{service_name}\", service_url: \"{service_url}\", service_status: {service_status}, expected_status: {expected_status}\nresponse_headers:{}\nmatches: {matches}",
@@ -129,24 +135,11 @@ pub async fn handle_http_response<S: BuildHasher>(
     let actual_status = i32::from(status.as_u16());
 
     // Check if the response status matches expected status
-    let status_matches = status.as_u16() == service_details.expect.status;
+    let status_matches = service_details.expect.status_matches(status.as_u16());
 
     // Check if the response body matches expected criteria
-    let body_mismatch_reason = if let Some(expected_body) = &service_details.expect.body {
-        if match_response_body(response, expected_body, service_details.max_bytes).await? {
-            None
-        } else {
-            Some("body_mismatch")
-        }
-    } else if let Some(expected_json) = &service_details.expect.json {
-        if match_response_json(response, expected_json, service_details.max_bytes).await? {
-            None
-        } else {
-            Some("json_mismatch")
-        }
-    } else {
-        None
-    };
+    let body_mismatch_reason =
+        match_response_expectations(response, service_details, service_details.max_bytes).await?;
     let body_matches = body_mismatch_reason.is_none();
 
     let is_match = status_matches && body_matches;
@@ -192,7 +185,7 @@ pub async fn handle_http_response<S: BuildHasher>(
             service_name = service_name,
             service_url = service_details.url,
             service_status = status.as_u16(),
-            expected_status = service_details.expect.status,
+            expected_status = %format_expected_status(service_details.expect.status),
             response_headers = %format_headers(&headers),
             matches = is_match
         );
@@ -201,7 +194,7 @@ pub async fn handle_http_response<S: BuildHasher>(
             service_name = service_name,
             service_url = service_details.url,
             service_status = status.as_u16(),
-            expected_status = service_details.expect.status,
+            expected_status = %format_expected_status(service_details.expect.status),
             response_headers = %format_headers(&headers),
             matches = is_match
         );
@@ -217,7 +210,7 @@ pub async fn handle_http_response<S: BuildHasher>(
         let context = FallbackContext {
             service_name,
             service_type: FallbackServiceType::Http,
-            expected_status: i32::from(service_details.expect.status),
+            expected_status: service_details.expect.expected_status_i32(),
             actual_status: Some(actual_status),
             error: if status_matches {
                 body_mismatch_reason.unwrap_or("request_error")
@@ -250,11 +243,41 @@ pub async fn handle_http_response<S: BuildHasher>(
     Ok(is_match)
 }
 
-async fn match_response_body(
+async fn match_response_expectations(
     response: reqwest::Response,
-    expected_body: &str,
+    service_details: &ServiceDetails,
     max_bytes: Option<usize>,
-) -> Result<bool> {
+) -> Result<Option<&'static str>> {
+    let expect = &service_details.expect;
+
+    if expect.body.is_none() && expect.json.is_none() && expect.body_not.is_none() {
+        return Ok(None);
+    }
+
+    let body = collect_response_bytes(response, max_bytes).await?;
+
+    if let Some(expected_body) = &expect.body
+        && !match_response_body(&body, expected_body)?
+    {
+        return Ok(Some("body_mismatch"));
+    }
+
+    if let Some(expected_json) = &expect.json
+        && !match_response_json(&body, expected_json)
+    {
+        return Ok(Some("json_mismatch"));
+    }
+
+    if let Some(forbidden_body) = &expect.body_not
+        && match_response_body(&body, forbidden_body)?
+    {
+        return Ok(Some("body_not_match"));
+    }
+
+    Ok(None)
+}
+
+fn match_response_body(body: &[u8], expected_body: &str) -> Result<bool> {
     let regex = generate_regex_pattern(expected_body).map_err(|e| {
         error!(
             "Invalid regex pattern in Expect body: {}, Error: {}",
@@ -263,8 +286,7 @@ async fn match_response_body(
         e
     })?;
 
-    let body = collect_response_bytes(response, max_bytes).await?;
-    let text = String::from_utf8_lossy(&body);
+    let text = String::from_utf8_lossy(body);
 
     if regex.is_match(&text) {
         debug!("Match found in response body");
@@ -274,18 +296,12 @@ async fn match_response_body(
     Ok(false)
 }
 
-async fn match_response_json(
-    response: reqwest::Response,
-    expected_json: &Value,
-    max_bytes: Option<usize>,
-) -> Result<bool> {
-    let body = collect_response_bytes(response, max_bytes).await?;
-
-    match serde_json::from_slice::<Value>(&body) {
-        Ok(actual_json) => Ok(json_contains(expected_json, &actual_json)),
+fn match_response_json(body: &[u8], expected_json: &Value) -> bool {
+    match serde_json::from_slice::<Value>(body) {
+        Ok(actual_json) => json_contains(expected_json, &actual_json),
         Err(e) => {
             error!("Failed to parse response body as JSON: {}", e);
-            Ok(false)
+            false
         }
     }
 }
@@ -544,7 +560,7 @@ mod tests {
             "google",
             Some(&"https://google.com".to_string()),
             301,
-            301,
+            Some(301),
             &headers,
             true,
         );
@@ -563,7 +579,7 @@ mod tests {
             "google",
             Some(&"https://google.com".to_string()),
             301,
-            301,
+            Some(301),
             true,
         );
 
@@ -659,9 +675,10 @@ mod tests {
         let service = ServiceDetails {
             every: Duration::from_secs(1),
             expect: Expect {
-                status: 200,
+                status: Some(200),
                 header: None,
                 body: None,
+                body_not: None,
                 json: None,
                 if_not: None,
             },
@@ -964,6 +981,84 @@ services:
     }
 
     #[tokio::test]
+    async fn test_handle_http_response_expect_body_not() {
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r#"
+---
+services:
+  test:
+    url: {mock_url}/test
+    every: 30s
+    expect:
+      body_not: r"error|failure|Fatal"
+    "#
+        );
+
+        let config = create_config(&yaml);
+        let service = config.services.get("test").expect("Service not found");
+
+        let success_mock = server
+            .mock("GET", "/test")
+            .with_body("all components healthy")
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let (builder, _client_config) =
+            build_client(service).expect("Failed to build client builder");
+        let client = builder.build().expect("Failed to build client");
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let request = build_http_request(&client, service).expect("Failed to build request");
+        let response = client
+            .execute(request.build().expect("Failed to build request"))
+            .await
+            .expect("Failed to execute request");
+
+        let rs = handle_http_response(
+            "test",
+            service,
+            response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+
+        assert!(rs);
+
+        success_mock.remove();
+        let _failure_mock = server
+            .mock("GET", "/test")
+            .with_body("Fatal writing output to destination")
+            .with_status(500)
+            .create_async()
+            .await;
+
+        let request = build_http_request(&client, service).expect("Failed to build request");
+        let response = client
+            .execute(request.build().expect("Failed to build request"))
+            .await
+            .expect("Failed to execute request");
+
+        let rs = handle_http_response(
+            "test",
+            service,
+            response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            counters,
+        )
+        .await
+        .expect("Failed to handle response");
+
+        assert!(!rs);
+    }
+
+    #[tokio::test]
     async fn test_handle_http_response_expect_json() {
         let mut server = Server::new_async().await;
         let mock_url = server.url();
@@ -1169,6 +1264,67 @@ services:
                 &format!("{mock_url}/test"),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_body_not_sets_error() {
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+        let (_tempdir, script_path, output_path) = create_env_capture_script(&["EPAZOTE_ERROR"]);
+
+        let yaml = format!(
+            r"
+---
+services:
+  test-body-not:
+    url: {mock_url}/test
+    every: 30s
+    expect:
+      body_not: Failure
+      if_not:
+        cmd: {script_path}
+    "
+        );
+
+        let config = create_config(&yaml);
+        let service = config
+            .services
+            .get("test-body-not")
+            .expect("Service not found");
+
+        let _mock = server
+            .mock("GET", "/test")
+            .with_body("Failure writing output to destination")
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let (builder, _client_config) =
+            build_client(service).expect("Failed to build client builder");
+        let client = builder.build().expect("Failed to build client");
+        let request = build_http_request(&client, service).expect("Failed to build request");
+        let response = client
+            .execute(request.build().expect("Failed to build request"))
+            .await
+            .expect("Failed to execute request");
+
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let rs = handle_http_response(
+            "test-body-not",
+            service,
+            response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            counters,
+        )
+        .await
+        .expect("Failed to handle response");
+
+        assert!(!rs);
+
+        let output = fs::read_to_string(output_path).expect("Failed to read env capture");
+        assert_eq!(output.trim(), "body_not_match");
     }
 
     #[allow(clippy::too_many_lines)]

@@ -1,6 +1,6 @@
 [package]
 name = "epazote"
-version = "3.4.0"
+version = "3.5.0"
 authors = ["Nicolas Embriz <nbari@tequila.io>"]
 description = "Automated HTTP (microservices) supervisor 🌿"
 documentation = "https://docs.rs/epazote/latest/epazote/"
@@ -75,7 +75,7 @@ built = { version = "0.8.0", features = ["git2"] }
 
 [dev-dependencies]
 assert_cmd = "2.2"
-ctor = "0.10"
+ctor = "0.11"
 env_logger = "0.11"
 mockito = "1.7"
 predicates = "3.1"

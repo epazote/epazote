@@ -1,0 +1,46 @@
+{
+  "name": "Rust + Neovim",
+  "image": "mcr.microsoft.com/devcontainers/rust:trixie",
+  "remoteUser": "vscode",
+  "userShell": "/usr/bin/zsh",
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "username": "vscode"
+    },
+    "ghcr.io/duduribeiro/devcontainer-features/neovim:1": {
+      "version": "stable"
+    }
+  },
+  "containerEnv": {
+    "EDITOR": "nvim",
+    "VISUAL": "nvim",
+    "CARGO_HOME": "/home/vscode/.cargo",
+    "CARGO_TARGET_DIR": "/home/vscode/.cargo/target"
+  },
+  "runArgs": [
+    "--userns=keep-id",
+    "--security-opt",
+    "label=disable"
+  ],
+  "mounts": [
+    {
+      "source": "rust-cargo-registry",
+      "target": "/home/vscode/.cargo/registry",
+      "type": "volume"
+    },
+    {
+      "source": "rust-cargo-git",
+      "target": "/home/vscode/.cargo/git",
+      "type": "volume"
+    },
+    {
+      "source": "rust-cargo-target",
+      "target": "/home/vscode/.cargo/target",
+      "type": "volume"
+    }
+  ],
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,z",
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "postCreateCommand": "bash .devcontainer/postcreate.sh"
+}

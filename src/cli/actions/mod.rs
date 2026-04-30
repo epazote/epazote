@@ -41,7 +41,7 @@ impl FallbackServiceType {
 pub struct FallbackContext<'a> {
     pub service_name: &'a str,
     pub service_type: FallbackServiceType,
-    pub expected_status: i32,
+    pub expected_status: Option<i32>,
     pub actual_status: Option<i32>,
     pub error: &'a str,
     pub failure_count: usize,
@@ -58,11 +58,14 @@ impl FallbackContext<'_> {
                 "EPAZOTE_SERVICE_TYPE",
                 self.service_type.as_env_value().to_string(),
             ),
-            ("EPAZOTE_EXPECTED_STATUS", self.expected_status.to_string()),
             ("EPAZOTE_ERROR", self.error.to_string()),
             ("EPAZOTE_FAILURE_COUNT", self.failure_count.to_string()),
             ("EPAZOTE_THRESHOLD", self.threshold.to_string()),
         ];
+
+        if let Some(expected_status) = self.expected_status {
+            vars.push(("EPAZOTE_EXPECTED_STATUS", expected_status.to_string()));
+        }
 
         if let Some(actual_status) = self.actual_status {
             vars.push(("EPAZOTE_ACTUAL_STATUS", actual_status.to_string()));
@@ -234,7 +237,7 @@ mod tests {
         let context = FallbackContext {
             service_name: "test",
             service_type: FallbackServiceType::Command,
-            expected_status: 0,
+            expected_status: Some(0),
             actual_status: Some(1),
             error: "command_failed",
             failure_count: 1,
@@ -282,7 +285,7 @@ mod tests {
         let context = FallbackContext {
             service_name: "vmagent",
             service_type: FallbackServiceType::Http,
-            expected_status: 200,
+            expected_status: Some(200),
             actual_status: Some(503),
             error: "status_mismatch",
             failure_count: 3,

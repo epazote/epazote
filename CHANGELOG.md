@@ -1,6 +1,13 @@
 Changelog
 =========
 
+## 3.5.0 (2026-04-30)
+- **Negative Body Matching**: Add `expect.body_not` to fail HTTP checks when a response body contains a forbidden plain-text or `r"..."` regex match.
+- **Body-Only HTTP Checks**: Allow HTTP checks to omit `expect.status` when another matcher such as `body`, `body_not`, or `json` is configured. Command checks using `test` still require `expect.status`.
+- **Fallback Context**: Report `EPAZOTE_ERROR=body_not_match` when `body_not` triggers `if_not`, and omit `EPAZOTE_EXPECTED_STATUS` when no expected HTTP status is configured.
+- **Docs**: Document `body_not`, body-only checks such as `body_not: r"error|failure|Fatal"`, and add an `epazote-docs` DevPod setup for building docs without installing dependencies on the host.
+- **Dependency Updates**: Run `cargo upgrade`/`cargo update`, including `ctor` 0.10 → 0.11 and transitive updates such as `reqwest` 0.13.2 → 0.13.3 and `rustls` 0.23.38 → 0.23.40. Update docs npm lockfile dependencies.
+
 ## 3.4.0 (2026-04-19)
 - **OOM Protection**: Introduce a safe default limit of **512KB** for `max_bytes` to prevent memory exhaustion on large HTTP responses.
 - **UTF-8 Bug Fix**: Fix high-severity bug in `match_response_body` where multi-byte characters split across network chunks caused data loss.
