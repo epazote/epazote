@@ -156,18 +156,19 @@ async fn should_continue_fallback<S: BuildHasher>(
         return false;
     }
 
-    // Check if we should stop processing
+    state.fallback_executions += 1;
+
+    // Check if we should stop processing AFTER this execution
     if let Some(stop) = action.stop
-        && state.fallback_executions >= stop
+        && state.fallback_executions > stop
     {
         warn!(
             "Service '{}' reached stop limit ({}), skipping fallback",
             service_name, stop
         );
+        state.fallback_executions -= 1; // Revert the increment since we're not executing
         return false;
     }
-
-    state.fallback_executions += 1;
 
     let stop_info = action
         .stop
@@ -324,6 +325,53 @@ mod tests {
 
         let should_continue = should_continue_fallback("test", &counters, &action).await;
         assert!(!should_continue);
+    }
+
+    #[tokio::test]
+    async fn test_should_continue_fallback_stop_one() {
+        let counters = Arc::new(Mutex::new(HashMap::new()));
+        let action = config::Action {
+            stop: Some(1),
+            threshold: Some(3),
+            ..Default::default()
+        };
+
+        // Below threshold
+        assert!(!should_continue_fallback("test", &counters, &action).await);
+        assert!(!should_continue_fallback("test", &counters, &action).await);
+
+        // At threshold - should execute once
+        assert!(should_continue_fallback("test", &counters, &action).await);
+
+        // Should stop after first execution
+        assert!(!should_continue_fallback("test", &counters, &action).await);
+
+        let counters = counters.lock().await;
+        let state = counters.get("test").expect("State not found");
+        assert_eq!(state.consecutive_failures, 4);
+        assert_eq!(state.fallback_executions, 1);
+    }
+
+    #[tokio::test]
+    async fn test_should_continue_fallback_stop_zero() {
+        let counters = Arc::new(Mutex::new(HashMap::new()));
+        let action = config::Action {
+            stop: Some(0),
+            threshold: Some(2),
+            ..Default::default()
+        };
+
+        // Below threshold
+        assert!(!should_continue_fallback("test", &counters, &action).await);
+
+        // At threshold but stop:0 means never execute
+        assert!(!should_continue_fallback("test", &counters, &action).await);
+        assert!(!should_continue_fallback("test", &counters, &action).await);
+
+        let counters = counters.lock().await;
+        let state = counters.get("test").expect("State not found");
+        assert_eq!(state.consecutive_failures, 3);
+        assert_eq!(state.fallback_executions, 0);
     }
 
     #[tokio::test]

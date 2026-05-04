@@ -1,6 +1,10 @@
 Changelog
 =========
 
+## 3.5.1 (2026-05-04)
+- **Critical Bug Fix**: Fix `if_not.stop` off-by-one error where `stop: 1` would never execute the fallback command. The check was comparing execution count before incrementing, causing `stop: 1` to incorrectly skip the first (and only intended) execution. Now executes exactly N times as configured before stopping.
+- **Test Coverage**: Add `test_should_continue_fallback_stop_one()` and `test_should_continue_fallback_stop_zero()` regression tests to prevent future regressions with edge case `stop` values.
+
 ## 3.5.0 (2026-04-30)
 - **Negative Body Matching**: Add `expect.body_not` to fail HTTP checks when a response body contains a forbidden plain-text or `r"..."` regex match.
 - **Body-Only HTTP Checks**: Allow HTTP checks to omit `expect.status` when another matcher such as `body`, `body_not`, or `json` is configured. Command checks using `test` still require `expect.status`.
