@@ -1,7 +1,8 @@
 use crate::cli::actions::metrics::ServiceMetrics;
-use anyhow::{Context, Result};
-use rustls::ClientConfig;
-use rustls::pki_types::ServerName;
+use anyhow::{Context, Result, anyhow};
+use rustls::pki_types::{CertificateDer, ServerName};
+use rustls::{ClientConfig, RootCertStore};
+use rustls_native_certs::CertificateResult;
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -9,14 +10,55 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-static ROOT_CERT_STORE: LazyLock<rustls::RootCertStore> = LazyLock::new(|| {
-    let mut roots = rustls::RootCertStore::empty();
+static ROOT_CERT_STORE: LazyLock<Result<RootCertStore, String>> =
+    LazyLock::new(load_native_root_cert_store);
 
-    for cert in rustls_native_certs::load_native_certs().expect("could not load platform certs") {
+fn root_cert_store_from_certs(certs: Vec<CertificateDer<'static>>) -> RootCertStore {
+    let mut roots = RootCertStore::empty();
+
+    for cert in certs {
         let _ = roots.add(cert);
     }
+
     roots
-});
+}
+
+fn root_cert_store_from_native_parts(
+    certs: Vec<CertificateDer<'static>>,
+    errors: &[String],
+) -> Result<RootCertStore> {
+    if !errors.is_empty() {
+        return Err(anyhow!(
+            "could not load platform certs: {}",
+            errors.join("; ")
+        ));
+    }
+
+    Ok(root_cert_store_from_certs(certs))
+}
+
+fn root_cert_store_from_native_result(result: CertificateResult) -> Result<RootCertStore> {
+    let errors = result
+        .errors
+        .into_iter()
+        .map(|error| error.to_string())
+        .collect::<Vec<_>>();
+
+    root_cert_store_from_native_parts(result.certs, &errors)
+}
+
+fn load_native_root_cert_store() -> Result<RootCertStore, String> {
+    root_cert_store_from_native_result(rustls_native_certs::load_native_certs())
+        .map_err(|error| error.to_string())
+}
+
+fn native_root_cert_store() -> Result<RootCertStore> {
+    ROOT_CERT_STORE
+        .as_ref()
+        .map(Clone::clone)
+        .map_err(|error| anyhow!(error.clone()))
+}
+
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_rustls::TlsConnector;
@@ -68,11 +110,14 @@ fn extract_host_port(url: &str) -> Result<(String, u16)> {
     Ok((host, port))
 }
 
-/// Retrieves the SSL certificate expiration time in seconds
-async fn get_cert_expiration_time(host: String, port: u16) -> Result<u64> {
+async fn get_cert_expiration_time_with_roots(
+    host: String,
+    port: u16,
+    root_cert_store: RootCertStore,
+) -> Result<u64> {
     // Configure TLS client
     let config = ClientConfig::builder()
-        .with_root_certificates(ROOT_CERT_STORE.clone())
+        .with_root_certificates(root_cert_store)
         .with_no_client_auth();
 
     let connector = TlsConnector::from(Arc::new(config));
@@ -133,6 +178,17 @@ pub async fn check_ssl_certificate(
     metrics: &ServiceMetrics,
     cache: &SslCheckCache,
 ) -> Result<()> {
+    check_ssl_certificate_with_roots(url, service_name, metrics, cache, native_root_cert_store()?)
+        .await
+}
+
+async fn check_ssl_certificate_with_roots(
+    url: &str,
+    service_name: &str,
+    metrics: &ServiceMetrics,
+    cache: &SslCheckCache,
+    root_cert_store: RootCertStore,
+) -> Result<()> {
     let now_epoch_secs = current_epoch_secs()?;
 
     if let Some(cached_state) = {
@@ -149,7 +205,7 @@ pub async fn check_ssl_certificate(
     }
 
     let (host, port) = extract_host_port(url)?;
-    let remaining = get_cert_expiration_time(host, port).await?;
+    let remaining = get_cert_expiration_time_with_roots(host, port, root_cert_store).await?;
 
     {
         let mut cache = cache.lock().await;
@@ -177,13 +233,55 @@ mod tests {
     use super::*;
     use anyhow::Result;
     use ctor::ctor;
-    use rustls::crypto::CryptoProvider;
+    use rcgen::{CertifiedKey, generate_simple_self_signed};
+    use rustls::{
+        ServerConfig,
+        pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer},
+    };
+    use tokio::{io::AsyncWriteExt, net::TcpListener};
+    use tokio_rustls::TlsAcceptor;
 
     // Initialize crypto provider once before all tests
-    #[ctor]
+    #[ctor(unsafe)]
     fn init_crypto() {
-        CryptoProvider::install_default(rustls::crypto::ring::default_provider())
+        rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider())
             .expect("Failed to initialize crypto provider");
+    }
+
+    struct LocalTlsServer {
+        url: String,
+        roots: RootCertStore,
+    }
+
+    async fn start_local_tls_server() -> Result<LocalTlsServer> {
+        let CertifiedKey { cert, signing_key } =
+            generate_simple_self_signed(vec!["localhost".to_string()])?;
+        let cert_der = cert.der().clone();
+        let key_der = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(signing_key.serialize_der()));
+        let config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der.clone()], key_der)?;
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let acceptor = TlsAcceptor::from(Arc::new(config));
+
+        tokio::spawn(async move {
+            if let Ok((stream, _)) = listener.accept().await
+                && let Ok(mut stream) = acceptor.accept(stream).await
+            {
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+            }
+        });
+
+        let mut roots = RootCertStore::empty();
+        roots.add(cert_der)?;
+
+        Ok(LocalTlsServer {
+            url: format!("https://localhost:{port}"),
+            roots,
+        })
     }
 
     #[test]
@@ -197,8 +295,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_cert_expiration_time() -> Result<()> {
-        let (host, port) = extract_host_port("https://www.google.com")?;
-        let remaining = get_cert_expiration_time(host, port).await?;
+        let server = start_local_tls_server().await?;
+        let (host, port) = extract_host_port(&server.url)?;
+        let remaining = get_cert_expiration_time_with_roots(host, port, server.roots).await?;
         assert!(remaining > 0, "Certificate should have future expiration");
         Ok(())
     }
@@ -213,9 +312,34 @@ mod tests {
             .await;
 
         let (host, port) = extract_host_port(&server.url())?;
-        let remaining = get_cert_expiration_time(host, port).await;
+        let remaining =
+            get_cert_expiration_time_with_roots(host, port, RootCertStore::empty()).await;
         assert!(remaining.is_err());
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_check_ssl_certificate_sets_metric_with_local_tls() -> Result<()> {
+        let server = start_local_tls_server().await?;
+        let metrics = ServiceMetrics::new()?;
+        let cache = new_ssl_check_cache();
+
+        check_ssl_certificate_with_roots(&server.url, "local_tls", &metrics, &cache, server.roots)
+            .await?;
+
+        let gauge = metrics
+            .epazote_ssl_cert_expiry_seconds
+            .get_metric_with_label_values(&["local_tls"])?;
+        assert!(gauge.get() > 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_root_cert_store_from_native_result_returns_errors() {
+        assert!(
+            root_cert_store_from_native_parts(Vec::new(), &["missing cert store".to_string()])
+                .is_err()
+        );
     }
 
     #[test]

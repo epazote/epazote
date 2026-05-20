@@ -76,7 +76,7 @@ pub async fn metrics_server(metrics: Arc<ServiceMetrics>, port: u16) -> Result<(
         .route("/metrics", get(metrics_handler))
         .with_state(metrics);
 
-    let listener = match TcpListener::bind(format!("::0:{port}")).await {
+    let listener = match TcpListener::bind(format!("[::]:{port}")).await {
         Ok(listener) => listener,
         Err(_) => TcpListener::bind(format!("0.0.0.0:{port}")).await?,
     };

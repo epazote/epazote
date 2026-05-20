@@ -1,6 +1,12 @@
 Changelog
 =========
 
+## 3.5.2 (2026-05-20)
+- **Dependency Updates**: Update OpenTelemetry crates to 0.32, `tracing-opentelemetry` to 0.33, `ctor` to 1.0, and refresh transitive dependencies.
+- **Development Workflow**: Remove `.devcontainer` setup and document direct Cargo workflows for portable development across toolbox, Linux, and macOS environments.
+- **Robustness**: Propagate metrics server failures instead of exiting successfully, make SSL root certificate loading return errors instead of panicking, and harden duration parsing against empty or overflowing values.
+- **Test Coverage**: Replace public-network SSL checks with local TLS coverage and add regressions for metrics bind failures, duration parsing, and user-agent formatting.
+
 ## 3.5.1 (2026-05-04)
 - **Critical Bug Fix**: Fix `if_not.stop` off-by-one error where `stop: 1` would never execute the fallback command. The check was comparing execution count before incrementing, causing `stop: 1` to incorrectly skip the first (and only intended) execution. Now executes exactly N times as configured before stopping.
 - **Test Coverage**: Add `test_should_continue_fallback_stop_one()` and `test_should_continue_fallback_stop_zero()` regression tests to prevent future regressions with edge case `stop` values.

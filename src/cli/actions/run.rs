@@ -10,9 +10,8 @@ use crate::cli::{
     },
     config::{Config, ServiceDetails},
 };
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use reqwest::Client;
-use rustls::crypto::CryptoProvider;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::{
     sync::Mutex,
@@ -40,8 +39,8 @@ fn expected_command_status(service_details: &ServiceDetails) -> Result<i32> {
 #[instrument(skip(action))]
 pub async fn handle(action: Action) -> Result<()> {
     // rustls requires a cryptographic provider
-    CryptoProvider::install_default(rustls::crypto::ring::default_provider())
-        .map_err(|e| anyhow!("Failed to install default crypto provider: {e:?}"))?;
+    let _ =
+        rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider());
 
     let Action::Run { config, port } = action;
 
@@ -95,28 +94,26 @@ pub async fn handle(action: Action) -> Result<()> {
     }
 
     // Spawn metrics server
-    let metrics_server_handle = tokio::spawn(async move {
-        if let Err(e) = metrics_server(service_metrics, port).await {
-            error!("Metrics server error: {}", e);
-        }
-    });
+    let metrics_server_handle = tokio::spawn(metrics_server(service_metrics, port));
 
     info!("Epazote 🌿 is running");
 
     // Wait for all tasks to complete
     tokio::select! {
         (result, _, _) = futures::future::select_all(service_handles) => {
-            match result {
-                Ok(()) => error!("A service monitoring task completed unexpectedly"),
-                Err(e) => error!("A service monitoring task panicked: {}", e),
-            }
+            return match result {
+                Ok(()) => Err(anyhow!("A service monitoring task completed unexpectedly")),
+                Err(e) => Err(anyhow!("A service monitoring task panicked: {e}")),
+            };
         },
-        _ = metrics_server_handle => {
-            error!("Metrics server stopped unexpectedly");
+        result = metrics_server_handle => {
+            return match result {
+                Ok(Ok(())) => Err(anyhow!("Metrics server stopped unexpectedly")),
+                Ok(Err(error)) => Err(error).context("Metrics server error"),
+                Err(error) => Err(anyhow!("Metrics server task panicked: {error}")),
+            };
         }
     }
-
-    Ok(())
 }
 
 /// Runs the task for a single service
@@ -375,6 +372,49 @@ mod tests {
                 .to_string(),
             output_path,
         )
+    }
+
+    fn occupy_metrics_port() -> (u16, TcpListener, Option<TcpListener>) {
+        let listener = TcpListener::bind("[::]:0")
+            .or_else(|_| TcpListener::bind("0.0.0.0:0"))
+            .expect("Failed to bind test listener");
+        let port = listener
+            .local_addr()
+            .expect("Failed to get local addr")
+            .port();
+        let ipv4_listener = TcpListener::bind(("0.0.0.0", port)).ok();
+
+        (port, listener, ipv4_listener)
+    }
+
+    #[tokio::test]
+    async fn test_handle_returns_error_when_metrics_port_is_in_use() {
+        let (port, _listener, _ipv4_listener) = occupy_metrics_port();
+        let config_file = tempfile::NamedTempFile::new().expect("Failed to create config file");
+        fs::write(
+            config_file.path(),
+            r#"
+services:
+  command_service:
+    test: "true"
+    every: 1s
+    expect:
+      status: 0
+"#,
+        )
+        .expect("Failed to write config file");
+
+        let result = handle(crate::cli::actions::Action::Run {
+            config: config_file.path().to_path_buf(),
+            port,
+        })
+        .await;
+
+        let error = result.expect_err("handle should fail");
+        assert!(
+            format!("{error:#}").contains("Metrics server"),
+            "unexpected error: {error:#}"
+        );
     }
 
     /// Test: Verify Shell Command Exit Codes

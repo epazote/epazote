@@ -6,11 +6,9 @@ Epazote is a Rust CLI and library. Core code lives in `src/`, with the executabl
 
 ## Build, Test, and Development Commands
 
-Prefer running Rust commands inside the `epazote` DevPod:
-
-```sh
-devpod ssh epazote --command "bash -lc 'cd /workspaces/epazote && cargo test'"
-```
+Run Rust commands directly from the repository checkout. The project should work
+in any normal Rust environment, including Linux toolbox containers and macOS,
+after cloning the repository and installing the Rust toolchain.
 
 Common commands:
 
@@ -20,7 +18,6 @@ cargo test                                 # run unit and integration tests
 cargo fmt --all -- --check                 # verify formatting
 cargo clippy --all-targets --all-features  # lint all targets
 cargo llvm-cov --all-features --workspace  # coverage, if installed
-just test                                  # build, clippy, fmt, then test
 ```
 
 ## Coding Style & Naming Conventions
@@ -37,4 +34,6 @@ Recent history uses concise messages such as `3.4.0`, `Release 3.3.1: ...`, and 
 
 ## Agent-Specific Instructions
 
-Edit on the host checkout, but compile and test in DevPod. Do not install Rust tooling on the host. Keep generated artifacts such as `target/`, VitePress `dist/`, and host `node_modules/` out of commits.
+Edit, compile, and test directly in the current checkout. Do not rely on
+DevPod/devcontainer-specific paths or tooling. Keep generated artifacts such as
+`target/`, VitePress `dist/`, and `node_modules/` out of commits.

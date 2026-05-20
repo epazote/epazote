@@ -5,8 +5,7 @@ use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue},
 };
 
-pub static APP_USER_AGENT: &str =
-    concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"), ")");
+pub static APP_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Debug)]
 pub struct ClientConfig {
@@ -76,6 +75,14 @@ mod tests {
             .expect("Failed to write to temp file");
         tmp_file.flush().expect("Failed to flush temp file");
         Config::new(tmp_file.path().to_path_buf()).expect("Failed to load config")
+    }
+
+    #[test]
+    fn test_app_user_agent_format() {
+        assert_eq!(
+            APP_USER_AGENT,
+            concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"))
+        );
     }
 
     #[tokio::test]

@@ -227,18 +227,27 @@ where
 
 /// Converts a string like "5s", "3m", "1h", "2d" into `Duration`.
 fn parse_duration_str(input: &str) -> Result<Duration> {
-    let (value, unit) = input.split_at(input.len() - 1);
+    let (value, multiplier) = if let Some(value) = input.strip_suffix('s') {
+        (value, 1)
+    } else if let Some(value) = input.strip_suffix('m') {
+        (value, 60)
+    } else if let Some(value) = input.strip_suffix('h') {
+        (value, 60 * 60)
+    } else if let Some(value) = input.strip_suffix('d') {
+        (value, 60 * 60 * 24)
+    } else {
+        return Err(anyhow!("Invalid duration unit in: {input}"));
+    };
+
     let value: u64 = value
         .parse()
         .map_err(|_| anyhow!("Invalid number in duration: {input}"))?;
 
-    match unit {
-        "s" => Ok(Duration::from_secs(value)),
-        "m" => Ok(Duration::from_secs(value * 60)),
-        "h" => Ok(Duration::from_secs(value * 60 * 60)),
-        "d" => Ok(Duration::from_secs(value * 60 * 60 * 24)),
-        _ => Err(anyhow!("Invalid duration unit: {unit}")),
-    }
+    let seconds = value
+        .checked_mul(multiplier)
+        .ok_or_else(|| anyhow!("Duration is too large: {input}"))?;
+
+    Ok(Duration::from_secs(seconds))
 }
 
 #[cfg(test)]
@@ -276,6 +285,18 @@ mod tests {
             parse_duration_str("2d").expect("Failed to parse duration"),
             Duration::from_hours(48)
         );
+    }
+
+    #[test]
+    fn test_parse_duration_rejects_empty_value() {
+        assert!(parse_duration_str("").is_err());
+        assert!(parse_duration_str("s").is_err());
+    }
+
+    #[test]
+    fn test_parse_duration_rejects_overflow() {
+        let input = format!("{}d", u64::MAX);
+        assert!(parse_duration_str(&input).is_err());
     }
 
     #[test]
