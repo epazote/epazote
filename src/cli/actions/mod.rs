@@ -13,7 +13,11 @@ use tracing::{info, warn};
 
 #[derive(Debug)]
 pub enum Action {
-    Run { config: PathBuf, port: u16 },
+    Run {
+        config: PathBuf,
+        bind: String,
+        port: u16,
+    },
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -133,6 +137,28 @@ async fn execute_fallback_http(url: &str) -> Result<i32> {
     let _ = response.bytes().await;
 
     Ok(i32::from(status.as_u16()))
+}
+
+/// Run the configured fallback actions (command then HTTP) for a failed service.
+///
+/// Both actions are optional and independent; whichever are present in the
+/// `if_not` configuration are executed in order.
+pub(crate) async fn execute_fallbacks(
+    action: &config::Action,
+    context: &FallbackContext<'_>,
+    service_name: &str,
+) -> Result<()> {
+    if let Some(cmd) = &action.cmd {
+        let exit_code = execute_fallback_command(cmd, context).await?;
+        info!("Executed fallback command for {service_name} with exit code {exit_code}");
+    }
+
+    if let Some(http) = &action.http {
+        let status = execute_fallback_http(http).await?;
+        info!("Executed fallback HTTP request for {service_name} with status code {status}");
+    }
+
+    Ok(())
 }
 
 use std::hash::BuildHasher;

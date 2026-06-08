@@ -18,7 +18,8 @@ impl Config {
     pub fn new(config_path: PathBuf) -> Result<Self> {
         let file = File::open(config_path)?;
 
-        let config: Self = serde_yaml::from_reader(file).context("Failed to parse config file")?;
+        let config: Self =
+            serde_yaml_ng::from_reader(file).context("Failed to parse config file")?;
 
         // Validate all services after loading
         for (name, service) in &config.services {

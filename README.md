@@ -116,6 +116,11 @@ Available variables:
 
 > default configuration file is `epazote.yml`
 
+Prometheus metrics are served on port `9080` by default (`--port` / `EPAZOTE_PORT`).
+The metrics server binds to all interfaces (`[::]`) by default; use `--bind` /
+`EPAZOTE_BIND` to restrict it, e.g. `epazote -c epazote.yml --bind 127.0.0.1` to keep
+`/metrics` local-only.
+
 Logs are pretty-printed by default for easier debugging. Use `--json-logs` if you want structured JSON logs instead.
 
 

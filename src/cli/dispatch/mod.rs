@@ -8,6 +8,10 @@ pub fn handler(matches: &clap::ArgMatches) -> Action {
             .get_one::<PathBuf>("config")
             .expect("Config path must be present due to default value")
             .clone(),
+        bind: matches
+            .get_one::<String>("bind")
+            .expect("Bind address must be present due to default value")
+            .clone(),
         port: matches
             .get_one::<u16>("port")
             .copied()
@@ -101,13 +105,19 @@ services:
 
         assert_eq!(m.get_one::<u16>("port").copied(), Some(9080));
 
+        assert_eq!(
+            m.get_one::<String>("bind").map(String::as_str),
+            Some("[::]")
+        );
+
         assert_eq!(m.get_one::<u8>("verbose").copied(), Some(0));
 
         let action = handler(&m);
 
         match action {
-            Action::Run { config, port } => {
+            Action::Run { config, bind, port } => {
                 assert_eq!(config, config_path);
+                assert_eq!(bind, "[::]");
                 assert_eq!(port, 9080);
             }
         }

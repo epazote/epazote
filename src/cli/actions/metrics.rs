@@ -66,22 +66,36 @@ impl ServiceMetrics {
     }
 }
 
+/// Bind the metrics listener for the given address and port.
+///
+/// When binding to the default dual-stack address `[::]` fails (for example on
+/// systems where IPv6 is disabled), it falls back to the all-IPv4 address
+/// `0.0.0.0`. An explicitly requested address is never silently changed: if it
+/// cannot bind, the error is returned instead of falling back.
+async fn bind_listener(bind: &str, port: u16) -> Result<TcpListener> {
+    match TcpListener::bind(format!("{bind}:{port}")).await {
+        Ok(listener) => Ok(listener),
+        Err(_) if bind == "[::]" => Ok(TcpListener::bind(format!("0.0.0.0:{port}")).await?),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Starts the metrics server.
 ///
 /// # Errors
 ///
-/// Returns an error if the server cannot bind to the port or encounters a runtime error.
-pub async fn metrics_server(metrics: Arc<ServiceMetrics>, port: u16) -> Result<()> {
+/// Returns an error if the server cannot bind to the address/port or encounters a runtime error.
+pub async fn metrics_server(metrics: Arc<ServiceMetrics>, bind: String, port: u16) -> Result<()> {
     let app = Router::new()
         .route("/metrics", get(metrics_handler))
         .with_state(metrics);
 
-    let listener = match TcpListener::bind(format!("[::]:{port}")).await {
-        Ok(listener) => listener,
-        Err(_) => TcpListener::bind(format!("0.0.0.0:{port}")).await?,
-    };
+    let listener = bind_listener(&bind, port).await?;
 
-    debug!("Metrics server listening on port {}", port);
+    match listener.local_addr() {
+        Ok(addr) => debug!("Metrics server listening on {addr}"),
+        Err(e) => debug!("Metrics server listening (failed to resolve local address: {e})"),
+    }
 
     axum::serve(listener, app.into_make_service())
         .await
@@ -258,6 +272,38 @@ services:
         assert_eq!(
             updated_status, 0,
             "Service status should be 0 after a failed request"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_bind_listener_explicit_loopback() {
+        // An explicit loopback address binds to exactly that interface.
+        let listener = bind_listener("127.0.0.1", 0)
+            .await
+            .expect("should bind to loopback");
+        let addr = listener.local_addr().expect("should have a local addr");
+        assert!(addr.ip().is_loopback(), "expected loopback, got {addr}");
+        assert!(addr.is_ipv4(), "expected IPv4, got {addr}");
+    }
+
+    #[tokio::test]
+    async fn test_bind_listener_default_dual_stack() {
+        // The default [::] address binds successfully (with the historical
+        // IPv4 fallback when IPv6 is unavailable).
+        let listener = bind_listener("[::]", 0)
+            .await
+            .expect("default bind should succeed");
+        assert!(listener.local_addr().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_bind_listener_explicit_address_does_not_fall_back() {
+        // An explicitly requested but unbindable address must error rather than
+        // silently falling back to 0.0.0.0 (only the default [::] falls back).
+        let result = bind_listener("203.0.113.1", 0).await;
+        assert!(
+            result.is_err(),
+            "explicit non-local address should fail without fallback, got {result:?}"
         );
     }
 }

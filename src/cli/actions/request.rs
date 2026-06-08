@@ -1,8 +1,7 @@
 use crate::cli::{
     actions::{
-        FallbackContext, FallbackServiceType, FallbackState, execute_fallback_command,
-        execute_fallback_http, get_fallback_state, metrics::ServiceMetrics, reset_fallback_state,
-        should_continue_fallback,
+        FallbackContext, FallbackServiceType, FallbackState, execute_fallbacks, get_fallback_state,
+        metrics::ServiceMetrics, reset_fallback_state, should_continue_fallback,
     },
     config::{BodyType, ServiceDetails},
     telemetry,
@@ -223,21 +222,7 @@ pub async fn handle_http_response<S: BuildHasher>(
             test: None,
         };
 
-        if let Some(cmd) = &action.cmd {
-            let exit_code = execute_fallback_command(cmd, &context).await?;
-            info!(
-                "Executed fallback command for {} with exit code {}",
-                service_name, exit_code
-            );
-        }
-
-        if let Some(http) = &action.http {
-            let status = execute_fallback_http(http).await?;
-            info!(
-                "Executed fallback HTTP request for {} with status code {}",
-                service_name, status
-            );
-        }
+        execute_fallbacks(action, &context, service_name).await?;
     }
 
     Ok(is_match)
@@ -338,8 +323,11 @@ async fn collect_response_bytes(
                 }
             }
             Err(e) => {
-                error!("Failed to read chunk: {}", e);
-                return Ok(Vec::new());
+                // Propagate the read failure instead of masking it as an empty body.
+                // Returning an empty buffer here would let a truncated/failed read be
+                // treated as a successful empty response, corrupting match decisions
+                // (e.g. `body_not` would falsely pass).
+                return Err(anyhow!("Failed to read response chunk: {e}"));
             }
         }
     }
@@ -708,6 +696,44 @@ mod tests {
         let rs = handle_http_response("test", &service, response, &metrics, counters).await;
 
         assert!(rs.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_collect_response_bytes_propagates_stream_error() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        // Raw server: advertise a larger Content-Length than the body actually sent,
+        // then close the connection so reqwest's body stream errors mid-read.
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind listener");
+        let addr = listener.local_addr().expect("Failed to get local addr");
+
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                // Claim 100 bytes but deliver only a few, then drop the connection.
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial")
+                    .await;
+                let _ = socket.flush().await;
+            }
+        });
+
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        let result = collect_response_bytes(response, None).await;
+        assert!(
+            result.is_err(),
+            "expected the stream read error to propagate, got {result:?}"
+        );
     }
 
     #[tokio::test]

@@ -1,6 +1,6 @@
 [package]
 name = "epazote"
-version = "3.5.2"
+version = "3.6.0"
 authors = ["Nicolas Embriz <nbari@tequila.io>"]
 description = "Automated HTTP (microservices) supervisor 🌿"
 documentation = "https://docs.rs/epazote/latest/epazote/"
@@ -59,7 +59,7 @@ rustls = "0.23"
 rustls-native-certs = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
-serde_yaml = "0.9"
+serde_yaml_ng = "0.10"
 strum = { version = "0.28", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 tokio-rustls = "0.26"
@@ -67,11 +67,10 @@ tracing = "0.1"
 tracing-opentelemetry = "0.33"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 url = "2"
-webpki = "0.22"
 x509-parser = "0.18"
 
 [build-dependencies]
-built = { version = "0.8.0", features = ["git2"] }
+built = { version = "0.8.1", features = ["git2"] }
 
 [dev-dependencies]
 assert_cmd = "2.2"

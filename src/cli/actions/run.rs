@@ -2,7 +2,7 @@ use crate::cli::{
     actions::{
         Action, FallbackContext, FallbackServiceType, FallbackState,
         client::build_client,
-        execute_command, execute_fallback_command, execute_fallback_http, get_fallback_state,
+        execute_command, execute_fallbacks, get_fallback_state,
         metrics::{ServiceMetrics, metrics_server},
         request::{build_http_request, handle_http_response},
         reset_fallback_state, should_continue_fallback,
@@ -17,7 +17,7 @@ use tokio::{
     sync::Mutex,
     time::{Instant, MissedTickBehavior, interval},
 };
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, error, info, instrument, warn};
 
 enum ServiceAction {
     Url(Client),
@@ -42,7 +42,7 @@ pub async fn handle(action: Action) -> Result<()> {
     let _ =
         rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider());
 
-    let Action::Run { config, port } = action;
+    let Action::Run { config, bind, port } = action;
 
     let config_path = config;
 
@@ -94,7 +94,7 @@ pub async fn handle(action: Action) -> Result<()> {
     }
 
     // Spawn metrics server
-    let metrics_server_handle = tokio::spawn(metrics_server(service_metrics, port));
+    let metrics_server_handle = tokio::spawn(metrics_server(service_metrics, bind, port));
 
     info!("Epazote 🌿 is running");
 
@@ -211,21 +211,7 @@ async fn scan_service(
                             test: None,
                         };
 
-                        if let Some(cmd) = &action.cmd {
-                            let exit_code = execute_fallback_command(cmd, &context).await?;
-                            info!(
-                                "Executed fallback command for {} with exit code {}",
-                                service_name, exit_code
-                            );
-                        }
-
-                        if let Some(http) = &action.http {
-                            let status = execute_fallback_http(http).await?;
-                            info!(
-                                "Executed fallback HTTP request for {} with status code {}",
-                                service_name, status
-                            );
-                        }
+                        execute_fallbacks(action, &context, service_name).await?;
                     }
 
                     return Err(error.into());
@@ -247,7 +233,18 @@ async fn scan_service(
         ServiceAction::Command(command) => {
             debug!("Executing command: {}", command);
 
-            let exit_status = execute_command(command).await.unwrap_or(1);
+            // A spawn failure (e.g. a missing SHELL binary) is treated as a failed
+            // check (exit code 1), but surface the underlying cause so it is not
+            // silently indistinguishable from the command running and exiting 1.
+            let exit_status = match execute_command(command).await {
+                Ok(code) => code,
+                Err(e) => {
+                    warn!(
+                        "Failed to execute command for {service_name}: {e}; treating as exit code 1"
+                    );
+                    1
+                }
+            };
             let expected_status = expected_command_status(service_details)?;
 
             if exit_status == expected_status {
@@ -270,21 +267,7 @@ async fn scan_service(
                     test: Some(command),
                 };
 
-                if let Some(cmd) = &action.cmd {
-                    let exit_code = execute_fallback_command(cmd, &context).await?;
-                    info!(
-                        "Executed fallback command for {} with exit code {}",
-                        service_name, exit_code
-                    );
-                }
-
-                if let Some(http) = &action.http {
-                    let status = execute_fallback_http(http).await?;
-                    info!(
-                        "Executed fallback HTTP request for {} with status code {}",
-                        service_name, status
-                    );
-                }
+                execute_fallbacks(action, &context, service_name).await?;
             }
         }
     }
@@ -406,6 +389,7 @@ services:
 
         let result = handle(crate::cli::actions::Action::Run {
             config: config_file.path().to_path_buf(),
+            bind: "[::]".to_string(),
             port,
         })
         .await;

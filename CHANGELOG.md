@@ -1,6 +1,12 @@
 Changelog
 =========
 
+## 3.6.0 (2026-06-08)
+- **Configurable Metrics Bind Address**: Add `--bind` / `EPAZOTE_BIND` (default `[::]`) to control the interface the metrics server listens on. Set `--bind 127.0.0.1` or `--bind ::1` to keep `/metrics` local. Default behavior is unchanged, including the IPv4 (`0.0.0.0`) fallback when binding dual-stack `[::]`.
+- **Correctness Fix**: `collect_response_bytes` now propagates a mid-stream read error instead of returning an empty body, preventing a failed/truncated read from being silently treated as a successful empty response (which could falsely pass `body_not` or falsely fail `body`/`json` checks).
+- **Maintainability**: De-duplicate fallback execution (command + HTTP) into a single `execute_fallbacks` helper shared by the HTTP request-error, HTTP response-mismatch, and command-check paths.
+- **Dependency Updates**: Replace the deprecated/unmaintained `serde_yaml` 0.9 with the maintained drop-in `serde_yaml_ng` 0.10, remove the unused `webpki` dependency, and refresh the lockfile.
+
 ## 3.5.2 (2026-05-20)
 - **Dependency Updates**: Update OpenTelemetry crates to 0.32, `tracing-opentelemetry` to 0.33, `ctor` to 1.0, and refresh transitive dependencies.
 - **Development Workflow**: Remove `.devcontainer` setup and document direct Cargo workflows for portable development across toolbox, Linux, and macOS environments.
