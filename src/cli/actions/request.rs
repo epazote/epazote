@@ -1673,6 +1673,167 @@ services:
         failing_mock.remove();
     }
 
+    #[allow(clippy::too_many_lines)]
+    #[tokio::test]
+    async fn test_handle_http_response_success_resets_stop_counter() {
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+        let tempdir = tempfile::Builder::new()
+            .prefix("epazote-http-stop-reset-")
+            .tempdir_in(".")
+            .expect("Failed to create temp dir");
+        let script_path = tempdir.path().join("capture.sh");
+        let output_path = tempdir.path().join("output.txt");
+
+        fs::write(
+            &script_path,
+            format!(
+                "#!/bin/sh\nprintenv EPAZOTE_FAILURE_COUNT >> {}\n",
+                output_path.display()
+            ),
+        )
+        .expect("Failed to write capture script");
+
+        let mut permissions = fs::metadata(&script_path)
+            .expect("Failed to stat script")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("Failed to chmod script");
+
+        let yaml = format!(
+            r"
+---
+services:
+  test-stop-reset:
+    url: {mock_url}/test
+    every: 30s
+    expect:
+      status: 200
+      body: ok
+      if_not:
+        threshold: 2
+        stop: 1
+        cmd: {}
+    ",
+            script_path.display()
+        );
+
+        let config = create_config(&yaml);
+        let service = config
+            .services
+            .get("test-stop-reset")
+            .expect("Service not found");
+
+        let _ = env_logger::try_init();
+        let failing_mock = server
+            .mock("GET", "/test")
+            .with_body("nope")
+            .match_header(
+                "User-Agent",
+                mockito::Matcher::Regex("epazote.*".to_string()),
+            )
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let (builder, _client_config) =
+            build_client(service).expect("Failed to build client builder");
+        let client = builder.build().expect("Failed to build client");
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let metrics = ServiceMetrics::new().expect("Failed to create metrics");
+
+        for _ in 0..2 {
+            let request = build_http_request(&client, service).expect("Failed to build request");
+            let response = client
+                .execute(request.build().expect("Failed to build request"))
+                .await
+                .expect("Failed to execute request");
+
+            assert!(
+                !handle_http_response(
+                    "test-stop-reset",
+                    service,
+                    response,
+                    &metrics,
+                    Arc::clone(&counters),
+                )
+                .await
+                .expect("Failed to handle response")
+            );
+        }
+
+        let output = fs::read_to_string(&output_path).expect("Failed to read env capture");
+        assert_eq!(output.lines().collect::<Vec<_>>(), vec!["2"]);
+
+        failing_mock.remove();
+        let success_mock = server
+            .mock("GET", "/test")
+            .with_body("ok")
+            .match_header(
+                "User-Agent",
+                mockito::Matcher::Regex("epazote.*".to_string()),
+            )
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let request = build_http_request(&client, service).expect("Failed to build request");
+        let response = client
+            .execute(request.build().expect("Failed to build request"))
+            .await
+            .expect("Failed to execute request");
+
+        assert!(
+            handle_http_response(
+                "test-stop-reset",
+                service,
+                response,
+                &metrics,
+                Arc::clone(&counters),
+            )
+            .await
+            .expect("Failed to handle response")
+        );
+
+        success_mock.remove();
+        let failing_mock = server
+            .mock("GET", "/test")
+            .with_body("still-nope")
+            .match_header(
+                "User-Agent",
+                mockito::Matcher::Regex("epazote.*".to_string()),
+            )
+            .with_status(200)
+            .create_async()
+            .await;
+
+        for _ in 0..2 {
+            let request = build_http_request(&client, service).expect("Failed to build request");
+            let response = client
+                .execute(request.build().expect("Failed to build request"))
+                .await
+                .expect("Failed to execute request");
+
+            assert!(
+                !handle_http_response(
+                    "test-stop-reset",
+                    service,
+                    response,
+                    &metrics,
+                    Arc::clone(&counters),
+                )
+                .await
+                .expect("Failed to handle response")
+            );
+        }
+
+        let output = fs::read_to_string(output_path).expect("Failed to read env capture");
+        assert_eq!(output.lines().collect::<Vec<_>>(), vec!["2", "2"]);
+
+        failing_mock.remove();
+    }
+
     #[tokio::test]
     async fn test_handle_http_response_expect_body_regex_stop() {
         // Start mock server

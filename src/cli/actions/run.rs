@@ -831,8 +831,34 @@ services:
     }
 
     #[tokio::test]
-    async fn test_scan_service_command_stop_does_not_reset_after_success() {
-        let mut service_details = mock_service_details(Some("exit 1"), 0, Some("echo 'Fallback'"));
+    async fn test_scan_service_command_success_resets_stop_counter() {
+        let tempdir = tempfile::Builder::new()
+            .prefix("epazote-command-stop-reset-")
+            .tempdir_in(".")
+            .expect("Failed to create temp dir");
+        let script_path = tempdir.path().join("capture.sh");
+        let output_path = tempdir.path().join("output.txt");
+
+        fs::write(
+            &script_path,
+            format!(
+                "#!/bin/sh\nprintenv EPAZOTE_FAILURE_COUNT >> {}\n",
+                output_path.display()
+            ),
+        )
+        .expect("Failed to write capture script");
+
+        let mut permissions = fs::metadata(&script_path)
+            .expect("Failed to stat script")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("Failed to chmod script");
+
+        let mut service_details = mock_service_details(
+            Some("exit 1"),
+            0,
+            Some(script_path.to_str().expect("Invalid script path")),
+        );
         let if_not = service_details
             .expect
             .if_not
@@ -858,6 +884,9 @@ services:
         )
         .await;
         assert!(first_failure.is_ok());
+
+        let output = fs::read_to_string(&output_path).expect("Failed to read env capture");
+        assert_eq!(output.lines().collect::<Vec<_>>(), vec!["1"]);
 
         let success = scan_service(
             "test-service",
@@ -887,6 +916,10 @@ services:
             .expect("State not found");
         assert_eq!(state.fallback_executions, 1);
         assert_eq!(state.consecutive_failures, 1);
+        drop(counters_locked);
+
+        let output = fs::read_to_string(output_path).expect("Failed to read env capture");
+        assert_eq!(output.lines().collect::<Vec<_>>(), vec!["1", "1"]);
     }
 
     /// Test: Scan Service Command - Ensure counter can reach 1000 when no stop condition is set

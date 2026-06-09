@@ -215,6 +215,7 @@ async fn reset_fallback_state<S: BuildHasher>(
     let mut counters = counters.lock().await;
     if let Some(state) = counters.get_mut(service_name) {
         state.consecutive_failures = 0;
+        state.fallback_executions = 0;
     }
 }
 
@@ -423,13 +424,23 @@ mod tests {
         let counters = Arc::new(Mutex::new(HashMap::new()));
         let action = config::Action {
             threshold: Some(2),
+            stop: Some(1),
             ..Default::default()
         };
 
         assert!(!should_continue_fallback("test", &counters, &action).await);
+        assert!(should_continue_fallback("test", &counters, &action).await);
+        assert!(!should_continue_fallback("test", &counters, &action).await);
+
         reset_fallback_state("test", &counters).await;
+
         assert!(!should_continue_fallback("test", &counters, &action).await);
         assert!(should_continue_fallback("test", &counters, &action).await);
+
+        let counters = counters.lock().await;
+        let state = counters.get("test").expect("State not found");
+        assert_eq!(state.consecutive_failures, 2);
+        assert_eq!(state.fallback_executions, 1);
     }
 
     #[tokio::test]

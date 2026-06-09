@@ -1,6 +1,11 @@
 Changelog
 =========
 
+## 3.6.1 (2026-06-09)
+- **Bug Fix**: Reset `if_not.stop` execution counters after a service recovers so `stop: 1` runs once per outage instead of only once for the lifetime of the Epazote process.
+- **Test Coverage**: Add regressions for HTTP and command checks with `threshold` + `stop` across recovery.
+- **Docs**: Clarify that `if_not.stop` applies per outage and is reset by a healthy check.
+
 ## 3.6.0 (2026-06-08)
 - **Configurable Metrics Bind Address**: Add `--bind` / `EPAZOTE_BIND` (default `[::]`) to control the interface the metrics server listens on. Set `--bind 127.0.0.1` or `--bind ::1` to keep `/metrics` local. Default behavior is unchanged, including the IPv4 (`0.0.0.0`) fallback when binding dual-stack `[::]`.
 - **Correctness Fix**: `collect_response_bytes` now propagates a mid-stream read error instead of returning an empty body, preventing a failed/truncated read from being silently treated as a successful empty response (which could falsely pass `body_not` or falsely fail `body`/`json` checks).

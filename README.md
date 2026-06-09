@@ -77,7 +77,7 @@ services:
                 cmd: systemctl restart vmagent
 ```
 
-`threshold` waits for N consecutive failures before running `if_not` actions. `stop` limits how many times those fallback actions will be executed after the threshold is reached.
+`threshold` waits for N consecutive failures before running `if_not` actions. `stop` limits how many times those fallback actions execute during one outage; a healthy check resets the counter for the next outage.
 
 ## Use `EPAZOTE_*` Variables In `if_not.cmd`
 
