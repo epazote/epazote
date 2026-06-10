@@ -205,6 +205,37 @@ services:
     }
 
     #[test]
+    fn test_invalid_body_regex_halts_startup() {
+        let (_lock, _env) = lock_and_clear_cli_env();
+        let dir = Builder::new()
+            .prefix("epazote")
+            .tempdir()
+            .expect("Failed to create temp dir");
+        let file = dir.path().join("bad-regex.yml");
+        let mut f = File::create(&file).expect("Failed to create config file");
+        f.write_all(
+            br#"---
+services:
+  test:
+    url: https://epazote.io
+    every: 1m
+    expect:
+      status: 200
+      body: r"(unclosed"
+"#,
+        )
+        .expect("Failed to write config");
+        f.flush().expect("Failed to flush config");
+
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).expect("Failed to find bin");
+        let assert = cmd.arg("-c").arg(&file).assert();
+
+        assert
+            .failure()
+            .stderr(predicate::str::contains("invalid regex in 'expect.body'"));
+    }
+
+    #[test]
     fn test_default_no_config() {
         let (_lock, _env) = lock_and_clear_cli_env();
         let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).expect("Failed to find bin");
