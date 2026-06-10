@@ -24,7 +24,8 @@ pub fn handler(matches: &clap::ArgMatches) -> Action {
 mod tests {
     use super::*;
     use crate::cli::commands::{new, normalize_env_vars};
-    use std::{ffi::OsString, io::Write, sync::Mutex};
+    use crate::cli::test_env::lock_and_clear_cli_env;
+    use std::io::Write;
 
     const CONF: &str = r"---
 services:
@@ -34,35 +35,6 @@ services:
     expect:
       status: 200
 ";
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    struct EnvVarGuard {
-        name: &'static str,
-        previous: Option<OsString>,
-    }
-
-    impl EnvVarGuard {
-        fn clear(name: &'static str) -> Self {
-            let previous = std::env::var_os(name);
-            unsafe {
-                std::env::remove_var(name);
-            }
-            Self { name, previous }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            unsafe {
-                if let Some(value) = &self.previous {
-                    std::env::set_var(self.name, value);
-                } else {
-                    std::env::remove_var(self.name);
-                }
-            }
-        }
-    }
 
     // Helper to create config from YAML
     fn create_config() -> tempfile::NamedTempFile {
@@ -76,11 +48,7 @@ services:
 
     #[test]
     fn test_handler() {
-        let _lock = ENV_LOCK.lock().expect("Failed to lock env");
-        let _config_env = EnvVarGuard::clear("EPAZOTE_CONFIG");
-        let _port_env = EnvVarGuard::clear("EPAZOTE_PORT");
-        let _verbose_env = EnvVarGuard::clear("EPAZOTE_VERBOSE");
-        let _json_logs_env = EnvVarGuard::clear("EPAZOTE_JSON_LOGS");
+        let (_lock, _env) = lock_and_clear_cli_env();
         normalize_env_vars();
 
         let tmp_config = create_config();

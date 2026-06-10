@@ -121,9 +121,10 @@ pub fn new() -> Command {
 #[allow(deprecated, clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::cli::test_env::{EnvVarGuard, lock_and_clear_cli_env};
     use assert_cmd::Command;
     use predicates::prelude::*;
-    use std::{ffi::OsStr, ffi::OsString, fs::File, io::Write, sync::Mutex};
+    use std::{ffi::OsStr, fs::File, io::Write};
     use tempfile::Builder;
 
     const CONF: &str = r"---
@@ -134,39 +135,6 @@ services:
     expect:
       status: 200
 ";
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    struct EnvVarGuard {
-        name: &'static str,
-        previous: Option<OsString>,
-    }
-
-    impl EnvVarGuard {
-        fn set(name: &'static str, value: Option<&OsStr>) -> Self {
-            let previous = env::var_os(name);
-            unsafe {
-                if let Some(value) = value {
-                    env::set_var(name, value);
-                } else {
-                    env::remove_var(name);
-                }
-            }
-            Self { name, previous }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            unsafe {
-                if let Some(value) = &self.previous {
-                    env::set_var(self.name, value);
-                } else {
-                    env::remove_var(self.name);
-                }
-            }
-        }
-    }
 
     fn get_config_dir(config: &str) -> tempfile::TempDir {
         let dir = Builder::new()
@@ -179,18 +147,6 @@ services:
             .expect("Failed to write to config file");
         f.flush().expect("Failed to flush config file");
         dir
-    }
-
-    fn lock_and_clear_cli_env() -> (std::sync::MutexGuard<'static, ()>, [EnvVarGuard; 5]) {
-        let lock = ENV_LOCK.lock().expect("Failed to lock env");
-        let guards = [
-            EnvVarGuard::set("EPAZOTE_CONFIG", None),
-            EnvVarGuard::set("EPAZOTE_PORT", None),
-            EnvVarGuard::set("EPAZOTE_BIND", None),
-            EnvVarGuard::set("EPAZOTE_VERBOSE", None),
-            EnvVarGuard::set("EPAZOTE_JSON_LOGS", None),
-        ];
-        (lock, guards)
     }
 
     #[test]

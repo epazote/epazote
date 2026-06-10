@@ -7,3 +7,6 @@ pub use self::start::start;
 
 mod commands;
 mod dispatch;
+
+#[cfg(test)]
+pub(crate) mod test_env;
