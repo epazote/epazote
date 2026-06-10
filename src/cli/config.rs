@@ -5,6 +5,7 @@ use std::{collections::HashMap, fs::File, path::PathBuf, time::Duration};
 use strum::{Display, EnumString};
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub services: HashMap<String, ServiceDetails>,
 }
@@ -103,6 +104,7 @@ impl<'de> Deserialize<'de> for BodyType {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceDetails {
     #[serde(deserialize_with = "parse_duration")]
     pub every: Duration,
@@ -113,7 +115,9 @@ pub struct ServiceDetails {
 
     pub headers: Option<HashMap<String, String>>,
 
-    #[serde(rename = "max_bytes", default = "default_max_bytes")]
+    // When unset, matcher-aware defaults apply: 64KB sliding window for
+    // body/body_not scans, 512KB buffer for json checks.
+    #[serde(rename = "max_bytes", default)]
     pub max_bytes: Option<usize>,
 
     pub test: Option<String>,
@@ -149,6 +153,7 @@ impl ServiceDetails {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct Expect {
     pub status: Option<u16>, // Use for both HTTP & text exit codes
     pub header: Option<HashMap<String, String>>,
@@ -199,6 +204,7 @@ impl Expect {
 }
 
 #[derive(Default, Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct Action {
     pub cmd: Option<String>,
     pub http: Option<String>,
@@ -209,12 +215,6 @@ pub struct Action {
 // Default timeout value
 const fn default_timeout() -> Duration {
     Duration::from_secs(5)
-}
-
-// Default max bytes to read from response (512KB)
-#[allow(clippy::unnecessary_wraps)]
-const fn default_max_bytes() -> Option<usize> {
-    Some(524_288)
 }
 
 /// Parses a duration string (e.g., "5s", "3m", "1h", "2d") into a Duration.
@@ -379,7 +379,7 @@ services:
                 .get("test")
                 .expect("Service not found")
                 .max_bytes,
-            Some(524_288) // 512KB default
+            None // matcher-aware defaults are applied at scan time
         );
     }
 
@@ -423,6 +423,48 @@ services:
         let config = Config::new(config_file);
 
         assert!(config.is_err());
+    }
+
+    #[test]
+    fn test_unknown_service_key_is_rejected() {
+        // Regression for issue #20: `max_size` (instead of `max_bytes`) was
+        // silently ignored, leaving the user with the 512KB default.
+        let yaml = r"
+---
+services:
+  test:
+    url: https://epazote.io
+    every: 30s
+    max_size: 10485760
+    expect:
+      status: 200
+      ";
+
+        let tmp_file = create_config(yaml);
+        let config = Config::new(tmp_file.path().to_path_buf());
+
+        let err = config.expect_err("Unknown key should be rejected");
+        assert!(format!("{err:?}").contains("max_size"));
+    }
+
+    #[test]
+    fn test_unknown_expect_key_is_rejected() {
+        let yaml = r"
+---
+services:
+  test:
+    url: https://epazote.io
+    every: 30s
+    expect:
+      status: 200
+      bodi: typo
+      ";
+
+        let tmp_file = create_config(yaml);
+        let config = Config::new(tmp_file.path().to_path_buf());
+
+        let err = config.expect_err("Unknown expect key should be rejected");
+        assert!(format!("{err:?}").contains("bodi"));
     }
 
     #[test]

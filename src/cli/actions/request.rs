@@ -3,12 +3,13 @@ use crate::cli::{
         FallbackContext, FallbackServiceType, FallbackState, execute_fallbacks, get_fallback_state,
         metrics::ServiceMetrics, reset_fallback_state, should_continue_fallback,
     },
-    config::{BodyType, ServiceDetails},
+    config::{BodyType, Expect, ServiceDetails},
     telemetry,
 };
 use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
 use regex::Regex;
+use regex_syntax::hir::Look;
 use reqwest::{
     Client, Method, RequestBuilder,
     header::{HeaderMap, HeaderValue},
@@ -19,6 +20,15 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
 use std::hash::BuildHasher;
+
+// Default sliding-window size for streaming body/body_not scans. This bounds
+// the memory retained per check (the whole body is still scanned), keeping the
+// footprint small when many services are monitored from the same host.
+const DEFAULT_SCAN_WINDOW_BYTES: usize = 64 * 1024;
+
+// Default buffering limit for `expect.json` checks, which need the whole
+// document in memory to be parsed.
+const DEFAULT_JSON_MAX_BYTES: usize = 512 * 1024;
 
 fn format_expected_status(status: Option<u16>) -> String {
     status.map_or_else(|| "any".to_string(), |status| status.to_string())
@@ -69,12 +79,14 @@ fn format_http_response_failure_log(
     expected_status: Option<u16>,
     headers: &HeaderMap<HeaderValue>,
     matches: bool,
+    reason: Option<&str>,
 ) -> String {
     let service_url = service_url.map_or("(none)", String::as_str);
     let expected_status = format_expected_status(expected_status);
+    let reason = reason.map_or_else(String::new, |reason| format!("\nreason: {reason}"));
 
     format!(
-        "service_name: \"{service_name}\", service_url: \"{service_url}\", service_status: {service_status}, expected_status: {expected_status}\nresponse_headers:{}\nmatches: {matches}",
+        "service_name: \"{service_name}\", service_url: \"{service_url}\", service_status: {service_status}, expected_status: {expected_status}\nresponse_headers:{}{reason}\nmatches: {matches}",
         format_headers_block(headers)
     )
 }
@@ -137,11 +149,57 @@ pub async fn handle_http_response<S: BuildHasher>(
     let status_matches = service_details.expect.status_matches(status.as_u16());
 
     // Check if the response body matches expected criteria
-    let body_mismatch_reason =
-        match_response_expectations(response, service_details, service_details.max_bytes).await?;
-    let body_matches = body_mismatch_reason.is_none();
+    let body_mismatch =
+        match match_response_expectations(response, service_details, service_details.max_bytes)
+            .await
+        {
+            Ok(mismatch) => mismatch,
+            Err(e) => {
+                // A failed or timed-out body read is a failed check: run the
+                // normal threshold/stop fallback path before propagating the
+                // error, otherwise remediation would be silently skipped.
+                warn!("Service '{service_name}' body read failed, running fallback path: {e}");
+
+                if let Some(action) = &service_details.expect.if_not
+                    && should_continue_fallback(service_name, &counters, action).await
+                {
+                    let state = get_fallback_state(service_name, &counters)
+                        .await
+                        .unwrap_or_default();
+                    let context = FallbackContext {
+                        service_name,
+                        service_type: FallbackServiceType::Http,
+                        expected_status: service_details.expect.expected_status_i32(),
+                        actual_status: Some(actual_status),
+                        error: "body_read_error",
+                        failure_count: state.consecutive_failures,
+                        threshold: action.threshold.unwrap_or(1),
+                        url: service_details.url.as_deref(),
+                        test: None,
+                    };
+
+                    execute_fallbacks(action, &context, service_name).await?;
+                }
+
+                return Err(e);
+            }
+        };
+    let body_matches = body_mismatch.is_none();
 
     let is_match = status_matches && body_matches;
+
+    let failure_reason = if is_match {
+        None
+    } else {
+        let mut reasons = Vec::new();
+        if !status_matches {
+            reasons.push("status_mismatch".to_string());
+        }
+        if let Some(mismatch) = &body_mismatch {
+            reasons.push(format!("{}: {}", mismatch.reason, mismatch.detail));
+        }
+        Some(reasons.join("; "))
+    };
 
     if is_match {
         reset_fallback_state(service_name, &counters).await;
@@ -171,6 +229,7 @@ pub async fn handle_http_response<S: BuildHasher>(
                 service_details.expect.status,
                 &headers,
                 is_match,
+                failure_reason.as_deref(),
             )
         };
 
@@ -195,6 +254,7 @@ pub async fn handle_http_response<S: BuildHasher>(
             service_status = status.as_u16(),
             expected_status = %format_expected_status(service_details.expect.status),
             response_headers = %format_headers(&headers),
+            reason = failure_reason.as_deref().unwrap_or("unknown"),
             matches = is_match
         );
     }
@@ -212,7 +272,9 @@ pub async fn handle_http_response<S: BuildHasher>(
             expected_status: service_details.expect.expected_status_i32(),
             actual_status: Some(actual_status),
             error: if status_matches {
-                body_mismatch_reason.unwrap_or("request_error")
+                body_mismatch
+                    .as_ref()
+                    .map_or("request_error", |mismatch| mismatch.reason)
             } else {
                 "status_mismatch"
             },
@@ -228,57 +290,329 @@ pub async fn handle_http_response<S: BuildHasher>(
     Ok(is_match)
 }
 
+struct BodyMismatch {
+    reason: &'static str,
+    detail: String,
+}
+
+struct BodyScanOutcome {
+    body_found: bool,
+    body_not_found: bool,
+    bytes_scanned: usize,
+    // First `prefix_limit` bytes of the body, kept for JSON parsing when
+    // `json` and `body_not` are combined.
+    prefix: Vec<u8>,
+}
+
+// A compiled body matcher. `needs_start`/`needs_end` mark patterns whose
+// every match is anchored to the absolute start/end of the body; those are
+// only evaluated against windows that truly touch the body start/end, so
+// `^`/`$` cannot false-match at sliding-window edges. Known approximations:
+// in mixed alternations (e.g. `^foo|bar`) the anchored branch may still
+// false-match at a window edge, and `(?m)` line anchors or `\b` may misjudge
+// the first bytes of a slid window; both are bounded by the half-window
+// overlap. Plain substring patterns are always exact.
+struct BodyPattern {
+    regex: Regex,
+    needs_start: bool,
+    needs_end: bool,
+}
+
+impl BodyPattern {
+    fn is_match(&self, text: &str, at_start: bool, at_end: bool) -> bool {
+        if self.needs_start && !at_start {
+            return false;
+        }
+
+        if self.needs_end && !at_end {
+            return false;
+        }
+
+        self.regex.is_match(text)
+    }
+}
+
 async fn match_response_expectations(
     response: reqwest::Response,
     service_details: &ServiceDetails,
     max_bytes: Option<usize>,
-) -> Result<Option<&'static str>> {
+) -> Result<Option<BodyMismatch>> {
     let expect = &service_details.expect;
 
     if expect.body.is_none() && expect.json.is_none() && expect.body_not.is_none() {
         return Ok(None);
     }
 
-    let body = collect_response_bytes(response, max_bytes).await?;
+    let body_regex = expect
+        .body
+        .as_deref()
+        .map(compile_body_pattern)
+        .transpose()?;
+    let body_not_regex = expect
+        .body_not
+        .as_deref()
+        .map(compile_body_pattern)
+        .transpose()?;
 
-    if let Some(expected_body) = &expect.body
-        && !match_response_body(&body, expected_body)?
-    {
-        return Ok(Some("body_mismatch"));
+    // JSON matching needs the whole (bounded) document in memory; body and
+    // body_not are scanned over the full stream with bounded memory instead.
+    if let Some(expected_json) = &expect.json {
+        let json_limit = max_bytes.unwrap_or(DEFAULT_JSON_MAX_BYTES);
+        let content_length = response.content_length();
+        let truncation = truncation_note(Some(json_limit), content_length);
+
+        let json_body = if body_not_regex.is_some() {
+            // Single pass: stream-scan body_not over the whole body while
+            // keeping the first `json_limit` bytes for the JSON parser. The
+            // scan window is capped at the default so a large `max_bytes`
+            // (meant for the JSON buffer) does not double the footprint, while
+            // a smaller `max_bytes` (including 0 = don't read) still bounds it.
+            let window = max_bytes.map_or(DEFAULT_SCAN_WINDOW_BYTES, |m| {
+                m.min(DEFAULT_SCAN_WINDOW_BYTES)
+            });
+            let scan =
+                scan_response_body(response, window, None, body_not_regex.as_ref(), json_limit)
+                    .await?;
+
+            if scan.body_not_found {
+                return Ok(Some(forbidden_body_mismatch(expect)));
+            }
+
+            scan.prefix
+        } else {
+            collect_response_bytes(response, Some(json_limit)).await?
+        };
+
+        if !match_response_json(&json_body, expected_json) {
+            return Ok(Some(BodyMismatch {
+                reason: "json_mismatch",
+                detail: format!("expected JSON not found in response body{truncation}"),
+            }));
+        }
+
+        return Ok(None);
     }
 
-    if let Some(expected_json) = &expect.json
-        && !match_response_json(&body, expected_json)
-    {
-        return Ok(Some("json_mismatch"));
+    let scan = scan_response_body(
+        response,
+        max_bytes.unwrap_or(DEFAULT_SCAN_WINDOW_BYTES),
+        body_regex.as_ref(),
+        body_not_regex.as_ref(),
+        0,
+    )
+    .await?;
+
+    if body_regex.is_some() && !scan.body_found {
+        return Ok(Some(BodyMismatch {
+            reason: "body_mismatch",
+            detail: format!(
+                "expected body '{}' not found in {} bytes scanned",
+                expect.body.as_deref().unwrap_or_default(),
+                scan.bytes_scanned
+            ),
+        }));
     }
 
-    if let Some(forbidden_body) = &expect.body_not
-        && match_response_body(&body, forbidden_body)?
-    {
-        return Ok(Some("body_not_match"));
+    if scan.body_not_found {
+        return Ok(Some(forbidden_body_mismatch(expect)));
     }
 
     Ok(None)
 }
 
-fn match_response_body(body: &[u8], expected_body: &str) -> Result<bool> {
-    let regex = generate_regex_pattern(expected_body).map_err(|e| {
+fn forbidden_body_mismatch(expect: &Expect) -> BodyMismatch {
+    BodyMismatch {
+        reason: "body_not_match",
+        detail: format!(
+            "forbidden body '{}' found in response",
+            expect.body_not.as_deref().unwrap_or_default()
+        ),
+    }
+}
+
+fn truncation_note(max_bytes: Option<usize>, content_length: Option<u64>) -> String {
+    let Some(max) = max_bytes else {
+        return String::new();
+    };
+
+    let max_u64 = u64::try_from(max).unwrap_or(u64::MAX);
+
+    match content_length {
+        Some(length) if length > max_u64 => {
+            format!(" (body truncated to max_bytes={max}, content-length={length})")
+        }
+        _ => String::new(),
+    }
+}
+
+fn read_chunk_error(e: &reqwest::Error) -> anyhow::Error {
+    if e.is_timeout() {
+        anyhow!("service 'timeout' exceeded while reading the response body: {e}")
+    } else {
+        anyhow!("Failed to read response chunk: {e}")
+    }
+}
+
+fn compile_body_pattern(input: &str) -> Result<BodyPattern> {
+    let (pattern, _raw) = regex_source(input)?;
+    let regex = Regex::new(&pattern).map_err(|e| {
         error!(
             "Invalid regex pattern in Expect body: {}, Error: {}",
-            expected_body, e
+            input, e
         );
         e
     })?;
 
-    let text = String::from_utf8_lossy(body);
+    let (needs_start, needs_end) = pattern_anchors(&pattern);
 
-    if regex.is_match(&text) {
+    Ok(BodyPattern {
+        regex,
+        needs_start,
+        needs_end,
+    })
+}
+
+/// Reports whether every match of `pattern` is anchored to the absolute start
+/// and/or end of the haystack, using the regex HIR instead of guessing from
+/// the pattern text. This correctly classifies shapes like `(?i)^foo`,
+/// `(^foo)`, `(foo$)` (anchored) and `^foo|bar`, `(?m)foo$` (not anchored to
+/// the whole body, so they must be evaluated on every window).
+fn pattern_anchors(pattern: &str) -> (bool, bool) {
+    // `Regex::new` already validated the pattern, so a parse failure here is
+    // unreachable in practice; fall back to unanchored (evaluate everywhere).
+    regex_syntax::parse(pattern).map_or((false, false), |hir| {
+        let props = hir.properties();
+        (
+            props.look_set_prefix().contains(Look::Start),
+            props.look_set_suffix().contains(Look::End),
+        )
+    })
+}
+
+/// Runs the configured matchers against the current window. Returns `true`
+/// once every configured matcher has found its text, meaning the scan can
+/// stop early.
+fn evaluate_window(
+    buffer: &[u8],
+    body_regex: Option<&BodyPattern>,
+    body_not_regex: Option<&BodyPattern>,
+    outcome: &mut BodyScanOutcome,
+    at_start: bool,
+    at_end: bool,
+) -> bool {
+    let text = String::from_utf8_lossy(buffer);
+
+    if let Some(regex) = body_regex
+        && !outcome.body_found
+        && regex.is_match(&text, at_start, at_end)
+    {
         debug!("Match found in response body");
-        return Ok(true);
+        outcome.body_found = true;
     }
 
-    Ok(false)
+    if let Some(regex) = body_not_regex
+        && !outcome.body_not_found
+        && regex.is_match(&text, at_start, at_end)
+    {
+        outcome.body_not_found = true;
+    }
+
+    (body_regex.is_none() || outcome.body_found)
+        && (body_not_regex.is_none() || outcome.body_not_found)
+}
+
+/// Streams the response body and runs the configured matchers over a sliding
+/// window, so the whole body is scanned while the retained buffer never grows
+/// beyond `max_bytes`: incoming chunks are fed into the window in bounded
+/// slices instead of being appended whole. Half of the window is kept as
+/// overlap between evaluations so matches crossing a window boundary are
+/// still found; matches longer than half the window may be missed if they
+/// span a boundary. Stops reading as soon as every configured matcher has
+/// found a match. When `prefix_limit` is non-zero, the first `prefix_limit`
+/// bytes are additionally retained in `prefix` (used to parse JSON while
+/// `body_not` scans the full stream).
+async fn scan_response_body(
+    response: reqwest::Response,
+    window: usize,
+    body_regex: Option<&BodyPattern>,
+    body_not_regex: Option<&BodyPattern>,
+    prefix_limit: usize,
+) -> Result<BodyScanOutcome> {
+    let mut outcome = BodyScanOutcome {
+        body_found: false,
+        body_not_found: false,
+        bytes_scanned: 0,
+        prefix: Vec::new(),
+    };
+
+    if window == 0 {
+        return Ok(outcome);
+    }
+
+    let overlap = window / 2;
+    let mut stream = response.bytes_stream();
+    let mut buffer: Vec<u8> = Vec::new();
+    let mut buffer_start = 0usize;
+    let mut resolved = false;
+
+    'read: while let Some(chunk) = stream.next().await {
+        // Propagate the read failure instead of masking it as an empty body.
+        // A truncated/failed read treated as success would corrupt match
+        // decisions (e.g. `body_not` would falsely pass).
+        let bytes = chunk.map_err(|e| read_chunk_error(&e))?;
+        outcome.bytes_scanned = outcome.bytes_scanned.saturating_add(bytes.len());
+
+        if outcome.prefix.len() < prefix_limit {
+            let take = (prefix_limit - outcome.prefix.len()).min(bytes.len());
+            let (head, _) = bytes.split_at(take);
+            outcome.prefix.extend_from_slice(head);
+        }
+
+        let mut remaining: &[u8] = &bytes;
+
+        while !remaining.is_empty() {
+            let capacity = window.saturating_sub(buffer.len());
+
+            if capacity == 0 {
+                if evaluate_window(
+                    &buffer,
+                    body_regex,
+                    body_not_regex,
+                    &mut outcome,
+                    buffer_start == 0,
+                    false,
+                ) {
+                    resolved = true;
+                    break 'read;
+                }
+
+                // Keep the newest `overlap` bytes so matches spanning the
+                // window boundary survive into the next evaluation.
+                let drain_to = buffer.len().saturating_sub(overlap);
+                buffer.drain(..drain_to);
+                buffer_start = buffer_start.saturating_add(drain_to);
+                continue;
+            }
+
+            let take = remaining.len().min(capacity);
+            let (head, tail) = remaining.split_at(take);
+            buffer.extend_from_slice(head);
+            remaining = tail;
+        }
+    }
+
+    if !resolved {
+        evaluate_window(
+            &buffer,
+            body_regex,
+            body_not_regex,
+            &mut outcome,
+            buffer_start == 0,
+            true,
+        );
+    }
+
+    Ok(outcome)
 }
 
 fn match_response_json(body: &[u8], expected_json: &Value) -> bool {
@@ -327,7 +661,7 @@ async fn collect_response_bytes(
                 // Returning an empty buffer here would let a truncated/failed read be
                 // treated as a successful empty response, corrupting match decisions
                 // (e.g. `body_not` would falsely pass).
-                return Err(anyhow!("Failed to read response chunk: {e}"));
+                return Err(read_chunk_error(&e));
             }
         }
     }
@@ -358,29 +692,39 @@ fn json_contains(expected: &Value, actual: &Value) -> bool {
 // Generates a regex pattern from the input string.
 /// - If input starts with `r"`, extract and use it as a raw regex (strip `r"` and trailing `"` if present).
 /// - Trims input before processing to remove extra whitespace.
+#[cfg(test)]
 fn generate_regex_pattern(input: &str) -> Result<Regex> {
-    let trimmed_input = input.trim();
-
-    if trimmed_input.is_empty() {
-        return Err(anyhow!("Input regex pattern cannot be empty"));
-    }
-
-    let pattern = trimmed_input.strip_prefix("r\"").map_or_else(
-        // Escape the input to prevent regex injection
-        || regex::escape(trimmed_input),
-        // If prefix exists, strip suffix and use raw regex
-        |raw| raw.strip_suffix('"').unwrap_or(raw).to_string(),
-    );
+    let (pattern, _) = regex_source(input)?;
 
     debug!(
         "Generated regex for: {}, pattern: {}",
-        trimmed_input, pattern
+        input.trim(),
+        pattern
     );
 
     Regex::new(&pattern).map_err(|e| {
         debug!("Regex compilation failed: {}", e);
         e.into()
     })
+}
+
+fn regex_source(input: &str) -> Result<(String, bool)> {
+    let trimmed_input = input.trim();
+
+    if trimmed_input.is_empty() {
+        return Err(anyhow!("Input regex pattern cannot be empty"));
+    }
+
+    let raw = trimmed_input.strip_prefix("r\"");
+
+    let pattern = raw.map_or_else(
+        // Escape the input to prevent regex injection
+        || regex::escape(trimmed_input),
+        // If prefix exists, strip suffix and use raw regex
+        |raw| raw.strip_suffix('"').unwrap_or(raw).to_string(),
+    );
+
+    Ok((pattern, raw.is_some()))
 }
 
 #[cfg(test)]
@@ -551,6 +895,7 @@ mod tests {
             Some(301),
             &headers,
             true,
+            None,
         );
 
         assert!(formatted.contains(
@@ -559,6 +904,22 @@ mod tests {
         assert!(formatted.contains("\n  content-type: text/html"));
         assert!(formatted.contains("\n  location: https://www.google.com/"));
         assert!(formatted.ends_with("\nmatches: true"));
+        assert!(!formatted.contains("\nreason:"));
+
+        let formatted = format_http_response_failure_log(
+            "google",
+            Some(&"https://google.com".to_string()),
+            200,
+            Some(200),
+            &headers,
+            false,
+            Some("body_mismatch: expected body 'pg_up' not found in 5765639 bytes scanned"),
+        );
+
+        assert!(formatted.contains(
+            "\nreason: body_mismatch: expected body 'pg_up' not found in 5765639 bytes scanned"
+        ));
+        assert!(formatted.ends_with("\nmatches: false"));
     }
 
     #[test]
@@ -2197,7 +2558,9 @@ services:
         let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
-        // print body
+        // The expected text (36 bytes) is longer than the 20-byte scan window,
+        // so it can never fit in a single evaluation: max_bytes must be larger
+        // than the longest expected match.
         let rs = handle_http_response(
             "test-max_bytes",
             service,
@@ -2266,7 +2629,8 @@ services:
         let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
-        // print body
+        // The pattern sits just past the 64000-byte window; the sliding-window
+        // scan keeps reading past max_bytes and finds it (issue #20).
         let rs = handle_http_response(
             "test-max_bytes",
             service,
@@ -2277,7 +2641,7 @@ services:
         .await
         .expect("Failed to handle response");
 
-        assert!(!rs);
+        assert!(rs);
     }
 
     #[tokio::test]
@@ -2347,6 +2711,989 @@ services:
         .expect("Failed to handle response");
 
         assert!(rs);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_expect_body_found_beyond_max_bytes() {
+        // Regression for issue #20: a body much larger than max_bytes with the
+        // expected text near the end must still match; max_bytes only bounds
+        // memory, not how far the scan goes.
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r"
+---
+services:
+  test-beyond:
+    url: {mock_url}/metrics
+    every: 30s
+    expect:
+      status: 200
+      body: pg_up
+    max_bytes: 1024
+    "
+        );
+
+        let response_body = format!("{}\npg_up 1\n", generate_numbers(2 * 1024 * 1024, 0));
+
+        let config = create_config(&yaml);
+        let service = config
+            .services
+            .get("test-beyond")
+            .expect("Service not found");
+
+        let _mock = server
+            .mock("GET", "/metrics")
+            .with_body(response_body)
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("{mock_url}/metrics"))
+            .send()
+            .await
+            .unwrap();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let rs = handle_http_response(
+            "test-beyond",
+            service,
+            response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+
+        assert!(rs);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_expect_body_default_window_scans_large_body() {
+        // With no max_bytes configured, the default 64KB scan window must
+        // still find text near the end of a multi-MB body.
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r"
+---
+services:
+  test-default-window:
+    url: {mock_url}/metrics
+    every: 30s
+    expect:
+      status: 200
+      body: pg_up
+    "
+        );
+
+        let response_body = format!("{}\npg_up 1\n", generate_numbers(3 * 1024 * 1024, 0));
+
+        let config = create_config(&yaml);
+        let service = config
+            .services
+            .get("test-default-window")
+            .expect("Service not found");
+
+        let _mock = server
+            .mock("GET", "/metrics")
+            .with_body(response_body)
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("{mock_url}/metrics"))
+            .send()
+            .await
+            .unwrap();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let rs = handle_http_response(
+            "test-default-window",
+            service,
+            response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+
+        assert!(rs);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_expect_body_not_found_beyond_max_bytes() {
+        // A forbidden pattern past max_bytes must still be detected.
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r"
+---
+services:
+  test-not-beyond:
+    url: {mock_url}/test
+    every: 30s
+    expect:
+      body_not: Fatal
+    max_bytes: 1024
+    "
+        );
+
+        let response_body = format!(
+            "{}\nFatal writing output to destination\n",
+            generate_numbers(512 * 1024, 0)
+        );
+
+        let config = create_config(&yaml);
+        let service = config
+            .services
+            .get("test-not-beyond")
+            .expect("Service not found");
+
+        let _mock = server
+            .mock("GET", "/test")
+            .with_body(response_body)
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let response = client.get(format!("{mock_url}/test")).send().await.unwrap();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let rs = handle_http_response(
+            "test-not-beyond",
+            service,
+            response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+
+        assert!(!rs);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_body_read_error_triggers_fallback() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        // A body read that fails mid-stream must still run the if_not
+        // fallback path (EPAZOTE_ERROR=body_read_error) before erroring.
+        let (_tempdir, script_path, output_path) = create_env_capture_script(&["EPAZOTE_ERROR"]);
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind listener");
+        let addr = listener.local_addr().expect("Failed to get local addr");
+
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                // Claim 100 bytes but deliver only a few, then drop the connection.
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial")
+                    .await;
+                let _ = socket.flush().await;
+            }
+        });
+
+        let yaml = format!(
+            r"
+---
+services:
+  test-read-error:
+    url: http://{addr}/
+    every: 30s
+    expect:
+      status: 200
+      body: pg_up
+      if_not:
+        cmd: {script_path}
+    "
+        );
+
+        let config = create_config(&yaml);
+        let service = config
+            .services
+            .get("test-read-error")
+            .expect("Service not found");
+
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let rs = handle_http_response(
+            "test-read-error",
+            service,
+            response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await;
+
+        assert!(rs.is_err(), "read error should propagate, got {rs:?}");
+
+        let output = fs::read_to_string(output_path).expect("Failed to read env capture");
+        assert_eq!(output.trim(), "body_read_error");
+
+        let counters_locked = counters.lock().await;
+        let state = counters_locked
+            .get("test-read-error")
+            .expect("State not found");
+        assert_eq!(state.consecutive_failures, 1);
+        assert_eq!(state.fallback_executions, 1);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_json_with_body_not_scans_full_body() {
+        // body_not combined with expect.json must scan the whole body, not
+        // just the buffered JSON prefix.
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r"
+---
+services:
+  test-json-body-not:
+    url: {mock_url}/api
+    every: 30s
+    expect:
+      status: 200
+      body_not: Fatal
+      json:
+        status: success
+    max_bytes: 1024
+    "
+        );
+
+        // Valid JSON larger than max_bytes, with the forbidden text near the
+        // end: json parsing of the 1024-byte prefix fails AND body_not must
+        // still catch the forbidden text past the prefix.
+        let dirty_body = format!(
+            r#"{{"status":"success","data":"{}Fatal error"}}"#,
+            "x".repeat(200 * 1024)
+        );
+
+        let config = create_config(&yaml);
+        let service = config
+            .services
+            .get("test-json-body-not")
+            .expect("Service not found");
+
+        let dirty_mock = server
+            .mock("GET", "/api")
+            .with_body(dirty_body)
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let response = client.get(format!("{mock_url}/api")).send().await.unwrap();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let rs = handle_http_response(
+            "test-json-body-not",
+            service,
+            response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+
+        assert!(!rs);
+
+        // Clean small JSON: body_not passes and json matches via the prefix.
+        dirty_mock.remove();
+        let _clean_mock = server
+            .mock("GET", "/api")
+            .with_body(r#"{"status":"success","data":"all good"}"#)
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let response = client.get(format!("{mock_url}/api")).send().await.unwrap();
+
+        let rs = handle_http_response(
+            "test-json-body-not",
+            service,
+            response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+
+        assert!(rs);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_json_with_body_not_uses_small_scan_window() {
+        // A large max_bytes value is needed for JSON parsing here, but it must
+        // not also become the body_not scan window.
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r"
+---
+services:
+  test-json-body-not-large-prefix:
+    url: {mock_url}/api
+    every: 30s
+    expect:
+      status: 200
+      body_not: Fatal
+      json:
+        status: success
+    max_bytes: 262144
+    "
+        );
+
+        let response_body = format!(
+            r#"{{"status":"success","data":"{}Fatal error"}}"#,
+            "x".repeat(200 * 1024)
+        );
+
+        let config = create_config(&yaml);
+        let service = config
+            .services
+            .get("test-json-body-not-large-prefix")
+            .expect("Service not found");
+
+        let _mock = server
+            .mock("GET", "/api")
+            .with_body(response_body)
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let response = client.get(format!("{mock_url}/api")).send().await.unwrap();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let rs = handle_http_response(
+            "test-json-body-not-large-prefix",
+            service,
+            response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+
+        assert!(!rs);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_raw_start_anchor_uses_response_start() {
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r#"
+---
+services:
+  late-start:
+    url: {mock_url}/late
+    every: 30s
+    expect:
+      status: 200
+      body: r"^start"
+    max_bytes: 16
+  true-start:
+    url: {mock_url}/true
+    every: 30s
+    expect:
+      status: 200
+      body: r"^start"
+    max_bytes: 16
+    "#
+        );
+
+        let config = create_config(&yaml);
+        let late_service = config
+            .services
+            .get("late-start")
+            .expect("Service not found");
+        let true_service = config
+            .services
+            .get("true-start")
+            .expect("Service not found");
+
+        let _late_mock = server
+            .mock("GET", "/late")
+            .with_body(format!("{}start{}", "x".repeat(16), "y".repeat(20)))
+            .with_status(200)
+            .create_async()
+            .await;
+        let _true_mock = server
+            .mock("GET", "/true")
+            .with_body(format!("start{}", "y".repeat(20)))
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let late_response = client.get(format!("{mock_url}/late")).send().await.unwrap();
+        let late_match = handle_http_response(
+            "late-start",
+            late_service,
+            late_response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+
+        assert!(!late_match);
+
+        let true_response = client.get(format!("{mock_url}/true")).send().await.unwrap();
+        let true_match = handle_http_response(
+            "true-start",
+            true_service,
+            true_response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+
+        assert!(true_match);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_raw_end_anchor_uses_response_end() {
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r#"
+---
+services:
+  internal-end:
+    url: {mock_url}/internal
+    every: 30s
+    expect:
+      status: 200
+      body_not: r"end$"
+    max_bytes: 16
+  true-end:
+    url: {mock_url}/true
+    every: 30s
+    expect:
+      status: 200
+      body_not: r"end$"
+    max_bytes: 16
+    "#
+        );
+
+        let config = create_config(&yaml);
+        let internal_service = config
+            .services
+            .get("internal-end")
+            .expect("Service not found");
+        let true_service = config.services.get("true-end").expect("Service not found");
+
+        let _internal_mock = server
+            .mock("GET", "/internal")
+            .with_body(format!("{}end{}", "x".repeat(13), "y".repeat(20)))
+            .with_status(200)
+            .create_async()
+            .await;
+        let _true_mock = server
+            .mock("GET", "/true")
+            .with_body(format!("{}end", "x".repeat(20)))
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let internal_response = client
+            .get(format!("{mock_url}/internal"))
+            .send()
+            .await
+            .unwrap();
+        let internal_match = handle_http_response(
+            "internal-end",
+            internal_service,
+            internal_response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+
+        assert!(internal_match);
+
+        let true_response = client.get(format!("{mock_url}/true")).send().await.unwrap();
+        let true_match = handle_http_response(
+            "true-end",
+            true_service,
+            true_response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+
+        assert!(!true_match);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_inline_flag_start_anchor_not_window_relative() {
+        // `(?i)^foo` is start-anchored even though the pattern text does not
+        // begin with `^`; it must not match a window that merely starts at
+        // "foo" mid-body (window 16, overlap 8 -> windows start at 0, 8, ...).
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r#"
+---
+services:
+  mid-foo:
+    url: {mock_url}/mid
+    every: 30s
+    expect:
+      status: 200
+      body: r"(?i)^foo"
+    max_bytes: 16
+  true-foo:
+    url: {mock_url}/true
+    every: 30s
+    expect:
+      status: 200
+      body: r"(?i)^foo"
+    max_bytes: 16
+    "#
+        );
+
+        let config = create_config(&yaml);
+        let mid_service = config.services.get("mid-foo").expect("Service not found");
+        let true_service = config.services.get("true-foo").expect("Service not found");
+
+        // "FOO" sits exactly at byte 8, where the second window starts.
+        let _mid_mock = server
+            .mock("GET", "/mid")
+            .with_body(format!("{}FOO{}", "x".repeat(8), "y".repeat(20)))
+            .with_status(200)
+            .create_async()
+            .await;
+        let _true_mock = server
+            .mock("GET", "/true")
+            .with_body(format!("FOObar{}", "y".repeat(20)))
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let mid_response = client.get(format!("{mock_url}/mid")).send().await.unwrap();
+        let mid_match = handle_http_response(
+            "mid-foo",
+            mid_service,
+            mid_response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+
+        assert!(!mid_match);
+
+        let true_response = client.get(format!("{mock_url}/true")).send().await.unwrap();
+        let true_match = handle_http_response(
+            "true-foo",
+            true_service,
+            true_response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+
+        assert!(true_match);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_mixed_alternation_unanchored_branch_matches() {
+        // `^start|backup` has an unanchored branch, so it must be evaluated on
+        // every window: "backup" deep in the body has to match.
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r#"
+---
+services:
+  deep-backup:
+    url: {mock_url}/deep
+    every: 30s
+    expect:
+      status: 200
+      body: r"^start|backup"
+    max_bytes: 16
+    "#
+        );
+
+        let config = create_config(&yaml);
+        let service = config
+            .services
+            .get("deep-backup")
+            .expect("Service not found");
+
+        let _mock = server
+            .mock("GET", "/deep")
+            .with_body(format!("{}backup{}", "x".repeat(40), "y".repeat(10)))
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let response = client.get(format!("{mock_url}/deep")).send().await.unwrap();
+        let rs = handle_http_response(
+            "deep-backup",
+            service,
+            response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+
+        assert!(rs);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_multiline_end_anchor_matches_mid_body() {
+        // `(?m)ok$` anchors to line ends, not the body end, so a matching line
+        // in the middle of the body must be found in a mid-stream window.
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r#"
+---
+services:
+  mid-line:
+    url: {mock_url}/mid
+    every: 30s
+    expect:
+      status: 200
+      body: r"(?m)ok$"
+    max_bytes: 16
+    "#
+        );
+
+        let config = create_config(&yaml);
+        let service = config.services.get("mid-line").expect("Service not found");
+
+        let _mock = server
+            .mock("GET", "/mid")
+            .with_body(format!("{}\nok\n{}", "x".repeat(30), "y".repeat(30)))
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let response = client.get(format!("{mock_url}/mid")).send().await.unwrap();
+        let rs = handle_http_response(
+            "mid-line",
+            service,
+            response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+
+        assert!(rs);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_grouped_end_anchor_not_window_relative() {
+        // `(end$)` is end-anchored despite the trailing `)`: as body_not it
+        // must not trigger when a mid-stream window happens to end at "end".
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r#"
+---
+services:
+  internal-end:
+    url: {mock_url}/internal
+    every: 30s
+    expect:
+      status: 200
+      body_not: r"(end$)"
+    max_bytes: 16
+  true-end:
+    url: {mock_url}/true
+    every: 30s
+    expect:
+      status: 200
+      body_not: r"(end$)"
+    max_bytes: 16
+    "#
+        );
+
+        let config = create_config(&yaml);
+        let internal_service = config
+            .services
+            .get("internal-end")
+            .expect("Service not found");
+        let true_service = config.services.get("true-end").expect("Service not found");
+
+        // "end" fills bytes 13..16: the first 16-byte window ends with it.
+        let _internal_mock = server
+            .mock("GET", "/internal")
+            .with_body(format!("{}end{}", "x".repeat(13), "y".repeat(20)))
+            .with_status(200)
+            .create_async()
+            .await;
+        let _true_mock = server
+            .mock("GET", "/true")
+            .with_body(format!("{}end", "x".repeat(20)))
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let internal_response = client
+            .get(format!("{mock_url}/internal"))
+            .send()
+            .await
+            .unwrap();
+        let internal_match = handle_http_response(
+            "internal-end",
+            internal_service,
+            internal_response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+
+        assert!(internal_match);
+
+        let true_response = client.get(format!("{mock_url}/true")).send().await.unwrap();
+        let true_match = handle_http_response(
+            "true-end",
+            true_service,
+            true_response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+
+        assert!(!true_match);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_json_body_not_max_bytes_zero_reads_nothing() {
+        // max_bytes: 0 means "don't read the body" in every matcher
+        // combination, including json + body_not.
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r"
+---
+services:
+  test-zero-combo:
+    url: {mock_url}/api
+    every: 30s
+    expect:
+      status: 200
+      body_not: Fatal
+      json:
+        status: success
+    max_bytes: 0
+    "
+        );
+
+        let config = create_config(&yaml);
+        let service = config
+            .services
+            .get("test-zero-combo")
+            .expect("Service not found");
+
+        let _mock = server
+            .mock("GET", "/api")
+            .with_body(r#"{"status":"success"}"#)
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let response = client.get(format!("{mock_url}/api")).send().await.unwrap();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let rs = handle_http_response(
+            "test-zero-combo",
+            service,
+            response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+
+        // Nothing is read, so the JSON expectation cannot be satisfied.
+        assert!(!rs);
+    }
+
+    #[tokio::test]
+    async fn test_handle_http_response_body_read_error_recovery_resets_counters() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        // After a body_read_error incremented the failure counters, a healthy
+        // check must reset them for the next outage.
+        let (_tempdir, script_path, _output_path) = create_env_capture_script(&["EPAZOTE_ERROR"]);
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind listener");
+        let addr = listener.local_addr().expect("Failed to get local addr");
+
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial")
+                    .await;
+                let _ = socket.flush().await;
+            }
+        });
+
+        let mut server = Server::new_async().await;
+        let mock_url = server.url();
+
+        let yaml = format!(
+            r"
+---
+services:
+  test-recovery:
+    url: {mock_url}/health
+    every: 30s
+    expect:
+      status: 200
+      body: pg_up
+      if_not:
+        cmd: {script_path}
+    "
+        );
+
+        let config = create_config(&yaml);
+        let service = config
+            .services
+            .get("test-recovery")
+            .expect("Service not found");
+
+        let client = reqwest::Client::new();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let broken_response = client
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        let rs = handle_http_response(
+            "test-recovery",
+            service,
+            broken_response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await;
+        assert!(rs.is_err());
+
+        {
+            let counters_locked = counters.lock().await;
+            let state = counters_locked
+                .get("test-recovery")
+                .expect("State not found");
+            assert_eq!(state.consecutive_failures, 1);
+            assert_eq!(state.fallback_executions, 1);
+        }
+
+        let _mock = server
+            .mock("GET", "/health")
+            .with_body("pg_up 1")
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let healthy_response = client
+            .get(format!("{mock_url}/health"))
+            .send()
+            .await
+            .unwrap();
+
+        let rs = handle_http_response(
+            "test-recovery",
+            service,
+            healthy_response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("Failed to handle response");
+        assert!(rs);
+
+        let counters_locked = counters.lock().await;
+        let state = counters_locked
+            .get("test-recovery")
+            .expect("State not found");
+        assert_eq!(state.consecutive_failures, 0);
+        assert_eq!(state.fallback_executions, 0);
     }
 
     #[tokio::test]
@@ -2494,8 +3841,9 @@ services:
         .await
         .expect("Failed to handle response");
 
-        // Should fail because "ABC" is at index 10, but we only read 5 bytes
-        assert!(!rs);
+        // "ABC" is at index 10, past max_bytes=5, but the scan covers the whole
+        // body so it is still found (issue #20)
+        assert!(rs);
     }
 
     #[tokio::test]

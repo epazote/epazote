@@ -30,6 +30,16 @@ pub(crate) fn normalize_env_vars() {
     }
 }
 
+/// Parses `EPAZOTE_VERBOSE` values with a helpful error: the variable takes a
+/// number equivalent to repeating `-v` (1=info, 2=debug, 3+=trace).
+fn verbosity_parser() -> ValueParser {
+    ValueParser::from(|s: &str| -> std::result::Result<u8, String> {
+        s.parse::<u8>().map_err(|_| {
+            format!("expected a number, e.g. EPAZOTE_VERBOSE=2 equals -vv (got '{s}')")
+        })
+    })
+}
+
 pub fn validator_is_file() -> ValueParser {
     ValueParser::from(move |s: &str| -> std::result::Result<PathBuf, String> {
         if let Ok(metadata) = fs::metadata(s)
@@ -93,8 +103,9 @@ pub fn new() -> Command {
                 .short('v')
                 .long("verbose")
                 .env("EPAZOTE_VERBOSE")
-                .help("Increase verbosity, -vv for debug")
-                .action(ArgAction::Count),
+                .help("Increase verbosity, -vv for debug (EPAZOTE_VERBOSE=2)")
+                .action(ArgAction::Count)
+                .value_parser(verbosity_parser()),
         )
         .arg(
             Arg::new("json-logs")
@@ -309,6 +320,53 @@ services:
 
         assert_eq!(m.get_one::<u8>("verbose").copied(), Some(2));
         assert!(m.get_flag("json-logs"));
+    }
+
+    #[test]
+    fn test_env_verbose_numeric_values_map_to_count() {
+        // Regression for issue #19: EPAZOTE_VERBOSE=N must behave like -v
+        // repeated N times.
+        let (_lock, _env) = lock_and_clear_cli_env();
+
+        for (value, expected) in [("1", 1u8), ("2", 2), ("3", 3)] {
+            let _verbose = EnvVarGuard::set("EPAZOTE_VERBOSE", Some(OsStr::new(value)));
+            let matches = new().try_get_matches_from(["epazote"]);
+
+            let m = matches.expect("Matches should be present");
+            assert_eq!(
+                m.get_one::<u8>("verbose").copied(),
+                Some(expected),
+                "EPAZOTE_VERBOSE={value} should map to count {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_env_verbose_invalid_value_reports_helpful_error() {
+        let (_lock, _env) = lock_and_clear_cli_env();
+        let _verbose = EnvVarGuard::set("EPAZOTE_VERBOSE", Some(OsStr::new("vvv")));
+
+        let matches = new().try_get_matches_from(["epazote"]);
+
+        let err = matches.expect_err("EPAZOTE_VERBOSE=vvv should be rejected");
+        assert!(
+            err.to_string()
+                .contains("expected a number, e.g. EPAZOTE_VERBOSE=2 equals -vv"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_cli_flags_take_precedence_over_env_verbose() {
+        let (_lock, _env) = lock_and_clear_cli_env();
+        let _verbose = EnvVarGuard::set("EPAZOTE_VERBOSE", Some(OsStr::new("3")));
+
+        let matches = new().try_get_matches_from(["epazote", "-v"]);
+
+        let m = matches.expect("Matches should be present");
+        // CLI occurrences win over the env var, so a stray -v on the command
+        // line caps verbosity regardless of EPAZOTE_VERBOSE.
+        assert_eq!(m.get_one::<u8>("verbose").copied(), Some(1));
     }
 
     #[test]
