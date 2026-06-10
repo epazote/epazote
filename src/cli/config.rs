@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, anyhow};
+use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::str::FromStr;
 use std::{collections::HashMap, fs::File, path::PathBuf, time::Duration};
@@ -199,8 +200,49 @@ impl Expect {
             ));
         }
 
+        if let Some(body) = &self.body {
+            validate_body_pattern("expect.body", body)?;
+        }
+
+        if let Some(body_not) = &self.body_not {
+            validate_body_pattern("expect.body_not", body_not)?;
+        }
+
         Ok(())
     }
+}
+
+/// Builds the regex pattern string for a `body`/`body_not` matcher value:
+/// `r"..."` values are used as raw regexes (trailing `"` stripped), everything
+/// else is escaped to a literal substring match.
+pub(crate) fn regex_source(input: &str) -> Result<String> {
+    let trimmed_input = input.trim();
+
+    if trimmed_input.is_empty() {
+        return Err(anyhow!("Input regex pattern cannot be empty"));
+    }
+
+    let raw = trimmed_input.strip_prefix("r\"");
+
+    let pattern = raw.map_or_else(
+        // Escape the input to prevent regex injection
+        || regex::escape(trimmed_input),
+        // If prefix exists, strip suffix and use raw regex
+        |raw| raw.strip_suffix('"').unwrap_or(raw).to_string(),
+    );
+
+    Ok(pattern)
+}
+
+// Compile the pattern at config load so an invalid regex halts startup with a
+// clear error instead of failing every check at runtime.
+fn validate_body_pattern(field: &str, input: &str) -> Result<()> {
+    let pattern =
+        regex_source(input).with_context(|| format!("invalid '{field}' pattern: {input}"))?;
+
+    Regex::new(&pattern).with_context(|| format!("invalid regex in '{field}': {input}"))?;
+
+    Ok(())
 }
 
 #[derive(Default, Debug, Deserialize, Clone)]
@@ -423,6 +465,83 @@ services:
         let config = Config::new(config_file);
 
         assert!(config.is_err());
+    }
+
+    #[test]
+    fn test_invalid_body_regex_is_rejected_at_startup() {
+        let yaml = r#"
+---
+services:
+  test:
+    url: https://epazote.io
+    every: 30s
+    expect:
+      status: 200
+      body: r"(unclosed"
+      "#;
+
+        let tmp_file = create_config(yaml);
+        let config = Config::new(tmp_file.path().to_path_buf());
+
+        let err = config.expect_err("Invalid regex should be rejected at startup");
+        assert!(format!("{err:?}").contains("expect.body"));
+    }
+
+    #[test]
+    fn test_invalid_body_not_regex_is_rejected_at_startup() {
+        let yaml = r#"
+---
+services:
+  test:
+    url: https://epazote.io
+    every: 30s
+    expect:
+      body_not: r"[a-"
+      "#;
+
+        let tmp_file = create_config(yaml);
+        let config = Config::new(tmp_file.path().to_path_buf());
+
+        let err = config.expect_err("Invalid regex should be rejected at startup");
+        assert!(format!("{err:?}").contains("expect.body_not"));
+    }
+
+    #[test]
+    fn test_empty_body_pattern_is_rejected_at_startup() {
+        let yaml = r#"
+---
+services:
+  test:
+    url: https://epazote.io
+    every: 30s
+    expect:
+      status: 200
+      body: ""
+      "#;
+
+        let tmp_file = create_config(yaml);
+        let config = Config::new(tmp_file.path().to_path_buf());
+
+        assert!(config.is_err());
+    }
+
+    #[test]
+    fn test_valid_raw_regex_passes_startup_validation() {
+        let yaml = r#"
+---
+services:
+  test:
+    url: https://epazote.io
+    every: 30s
+    expect:
+      body: r"(?m)^pg_up 1$"
+      body_not: r"error|failure|Fatal"
+      "#;
+
+        let tmp_file = create_config(yaml);
+        let config = Config::new(tmp_file.path().to_path_buf());
+
+        assert!(config.is_ok());
     }
 
     #[test]

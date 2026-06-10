@@ -3,7 +3,7 @@ use crate::cli::{
         FallbackContext, FallbackServiceType, FallbackState, execute_fallbacks, get_fallback_state,
         metrics::ServiceMetrics, reset_fallback_state, should_continue_fallback,
     },
-    config::{BodyType, Expect, ServiceDetails},
+    config::{BodyType, Expect, ServiceDetails, regex_source},
     telemetry,
 };
 use anyhow::{Result, anyhow};
@@ -454,7 +454,7 @@ fn read_chunk_error(e: &reqwest::Error) -> anyhow::Error {
 }
 
 fn compile_body_pattern(input: &str) -> Result<BodyPattern> {
-    let (pattern, _raw) = regex_source(input)?;
+    let pattern = regex_source(input)?;
     let regex = Regex::new(&pattern).map_err(|e| {
         error!(
             "Invalid regex pattern in Expect body: {}, Error: {}",
@@ -694,7 +694,7 @@ fn json_contains(expected: &Value, actual: &Value) -> bool {
 /// - Trims input before processing to remove extra whitespace.
 #[cfg(test)]
 fn generate_regex_pattern(input: &str) -> Result<Regex> {
-    let (pattern, _) = regex_source(input)?;
+    let pattern = regex_source(input)?;
 
     debug!(
         "Generated regex for: {}, pattern: {}",
@@ -706,25 +706,6 @@ fn generate_regex_pattern(input: &str) -> Result<Regex> {
         debug!("Regex compilation failed: {}", e);
         e.into()
     })
-}
-
-fn regex_source(input: &str) -> Result<(String, bool)> {
-    let trimmed_input = input.trim();
-
-    if trimmed_input.is_empty() {
-        return Err(anyhow!("Input regex pattern cannot be empty"));
-    }
-
-    let raw = trimmed_input.strip_prefix("r\"");
-
-    let pattern = raw.map_or_else(
-        // Escape the input to prevent regex injection
-        || regex::escape(trimmed_input),
-        // If prefix exists, strip suffix and use raw regex
-        |raw| raw.strip_suffix('"').unwrap_or(raw).to_string(),
-    );
-
-    Ok((pattern, raw.is_some()))
 }
 
 #[cfg(test)]
