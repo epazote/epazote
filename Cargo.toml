@@ -1,6 +1,6 @@
 [package]
 name = "epazote"
-version = "3.7.0"
+version = "3.7.1"
 authors = ["Nicolas Embriz <nbari@tequila.io>"]
 description = "Automated HTTP (microservices) supervisor 🌿"
 documentation = "https://docs.rs/epazote/latest/epazote/"
@@ -53,7 +53,7 @@ opentelemetry = "0.32"
 opentelemetry-otlp = { version = "0.32", default-features = false, features = ["grpc-tonic", "tls", "trace"] }
 opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
 prometheus = "0.14"
-regex = "1.12"
+regex = "1.13"
 regex-syntax = "0.8"
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "form", "rustls", "http2", "charset", "gzip", "brotli", "deflate"] }
 rustls = "0.23"
