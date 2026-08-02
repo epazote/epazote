@@ -465,14 +465,14 @@ mod tests {
         let mut server = Server::new_async().await;
         let _m = server.mock("GET", "/status/200").with_status(200).create();
 
-        let exit_code = execute_fallback_http(format!("{}/status/200", &server.url()).as_str())
+        let exit_code = execute_fallback_http(format!("{}/status/200", server.url()).as_str())
             .await
             .expect("Failed to execute HTTP fallback");
 
         assert_eq!(exit_code, 200);
 
         // bad request
-        let exit_code = execute_fallback_http(format!("{}/status/400", &server.url()).as_str())
+        let exit_code = execute_fallback_http(format!("{}/status/400", server.url()).as_str())
             .await
             .expect("Failed to execute HTTP fallback");
 

@@ -1,6 +1,9 @@
 Changelog
 =========
 
+## 3.7.1 (2026-08-02)
+- **Maintenance**: Refresh dependencies and fix Rust 1.97 Clippy warnings.
+
 ## 3.7.0 (2026-06-10)
 - **Full-Body Scanning (#20)**: `expect.body` and `expect.body_not` now scan the entire response body using a sliding window instead of only checking the first `max_bytes`. `max_bytes` now bounds memory only — it no longer truncates the search — so expected text deep inside a multi-MB body (e.g. `pg_up` in a 5MB `/metrics` page) is found. Reading stops early once every configured matcher has found its text, and the scan is time-bounded by the service `timeout` (default 5s): a body that takes longer to read is aborted and reported as `service 'timeout' exceeded while reading the response body`. Note: matches longer than half the window may be missed if they span a window boundary, so keep `max_bytes` comfortably larger than the longest expected match.
 - **Lower Default Memory Footprint**: when `max_bytes` is unset, defaults are now matcher-aware: `body`/`body_not` scans use a 64KB sliding window (down from buffering 512KB) so monitoring many services from one host stays lightweight, while `expect.json` keeps buffering up to 512KB since a JSON document must be parsed whole. Setting `max_bytes` explicitly overrides the JSON buffer and non-JSON scan window; when `body_not` is combined with `expect.json`, the scan window is capped at 64KB and never larger than `max_bytes` (so `max_bytes: 0` still means "don't read the body"), while JSON buffering follows `max_bytes`.
