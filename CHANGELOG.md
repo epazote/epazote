@@ -1,6 +1,39 @@
 Changelog
 =========
 
+## 4.0.0 (2026-08-27)
+
+### Breaking changes
+
+- **`test` commands can now be killed**: command checks are bounded by the service `timeout` (default **5s**). A command that never returned previously blocked that service's task forever, silently stopping every later scan. A command that exceeds the timeout is now killed and counts as a failed check, so the normal `if_not` threshold/stop path runs. **A health-check script that legitimately runs longer than 5s must now set `timeout` explicitly**, e.g. `timeout: 30s`.
+
+### Added
+
+- **`if_not.timeout`**: recovery actions get their own time budget, default **300s**, since a restart legitimately takes far longer than a health probe. Applies to both `cmd` and `http`. Set per fallback, e.g. `if_not: { cmd: "systemctl restart app", timeout: 15m }`. Note that a hung recovery still holds that service for the full budget, so lower it when recovery should never linger. Accepts `s`/`m`/`h`/`d` like every other duration, and the unit is required.
+- **Fallback command output**: stderr from a command is now logged instead of captured and discarded, making a failing recovery diagnosable. It is logged at warning level only when the command fails, since healthy commands legitimately write to stderr, and retention is capped while the pipe is still drained so a chatty command cannot grow memory or block.
+- **Command services now emit metrics**: `test` services previously recorded no metrics at all — not `epazote_status`, not `epazote_response_time_seconds` — so a failing command service was invisible to Prometheus and only appeared if its fallback errored. Both are now reported per check. Existing dashboard panels will start showing command services that were previously absent. `epazote_failures_total` is unchanged and still counts scan errors only, matching the HTTP path.
+
+### Fixed
+
+- **`if_not` now runs for unreachable HTTPS services**: a failed SSL certificate check no longer aborts the scan before the HTTP request is made. Previously the check was error-propagated, so an unreachable `https://` service returned early, was counted in `epazote_failures_total` with `epazote_status` `0`, and its configured `if_not` fallback never ran — exactly when remediation is needed. The scan now continues to the HTTP request, so the outcome flows through the normal `expect`/`if_not` path instead. **If you alert on `epazote_failures_total` for HTTPS services, expect fewer counter increments and fallbacks that now actually fire.** Certificate failures are logged as a warning. Note that a service whose recovery has silently never run will now start executing it.
+- **The certificate check is now bounded too**: neither the TCP connect nor the TLS handshake had a timeout, so a blackholed address or a peer that accepts TCP and never completes the handshake stalled every later scan for that service, even after the check stopped aborting the scan. It is now bounded by the service `timeout`.
+- **A command that could not run is never reported healthy**: execution failures (a spawn error, or a command killed at its `timeout`) were reported as exit code 1. A hung command configured with `expect.status: 1` therefore matched, and was reported healthy with no fallback — the worst possible outcome for a service that was not being checked at all. Execution errors are now distinct from a genuine exit status: they always fail the check, `EPAZOTE_ACTUAL_STATUS` is unset for them, and `EPAZOTE_ERROR` is `command_error` rather than `command_failed`.
+- **`if_not.http` is time-bounded**: the shared fallback HTTP client had no timeout, so an alert endpoint that accepted the connection and never answered hung the request and stalled every later scan. Both fallback actions are now bounded by `if_not.timeout`.
+- **Failed certificate checks back off**: only successful checks were cached, so a service that was down repeated the whole connect and handshake on every scan ahead of the HTTP request. A failed check is now remembered for 60s before being retried, and is stamped when it finishes rather than when it starts — a check that burned its whole `timeout` was otherwise cached already expired, defeating the backoff for exactly the slow failures it exists for. Successful checks are stamped the same way, so the exported expiry is no longer short by the duration of the check.
+- **Failed fallback HTTP bodies are logged**: the response body was consumed with its result discarded, so a fallback whose headers arrived and whose body then failed or timed out was reported as a clean success.
+- **Timed-out commands no longer leak descendants**: killing the spawned shell left any processes it had started running, so a timeout leaked them on every scan. The command now runs in its own process group, which is signalled as a whole.
+- **`if_not.cmd` and `if_not.http` are genuinely independent**: a failing or timed-out fallback command no longer skips the configured HTTP action, which is often the only way an operator learns that recovery failed. Both run, and the first error is still reported.
+
+### Performance
+
+- `expect.body`/`expect.body_not` patterns are compiled once and cached instead of recompiled on every response. Compilation costs orders of magnitude more than the match itself (~268us to compile a complex pattern versus ~6us to run it over a 64KB body).
+- The system root certificate store is no longer cloned on every HTTPS scan. It was passed by value, so all ~150 system roots were copied even on the scans that hit the 12h certificate cache and open no TLS connection.
+- The HTTP method is mapped to a constant instead of being formatted to a `String` and re-parsed on every request, and the response buffer is sized from `Content-Length` (bounded by `max_bytes`) instead of growing chunk by chunk.
+
+### Security
+
+- Refreshed dependencies, including `h2` 0.4.15 -> 0.4.19, which clears RUSTSEC-2026-0258 (unbounded empty DATA frames). A daily `cargo audit` workflow now runs in CI, and the repository has a published security policy.
+
 ## 3.7.1 (2026-08-02)
 - **Maintenance**: Refresh dependencies and fix Rust 1.97 Clippy warnings.
 

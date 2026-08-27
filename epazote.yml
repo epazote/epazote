@@ -26,7 +26,11 @@ services:
   my-command:
     test: false
     every: 5m
+    # how long the check command may run before it is killed (default 5s)
+    timeout: 10s
     expect:
       status: 0
       if_not:
+        # recovery commands get their own budget (default 300s)
+        timeout: 15m
         cmd:

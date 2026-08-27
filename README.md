@@ -79,6 +79,14 @@ services:
 
 `threshold` waits for N consecutive failures before running `if_not` actions. `stop` limits how many times those fallback actions execute during one outage; a healthy check resets the counter for the next outage.
 
+`if_not.timeout` bounds each fallback action — how long `cmd` may run before it is killed, and how long the `http` request may take (default: `300s`). Recovery is not a health probe, so it gets a far more generous budget than the service `timeout`, which bounds the check itself (default: `5s`). Raise it for a slow restart, lower it when recovery should never linger:
+
+```yaml
+            if_not:
+                timeout: 15m
+                cmd: systemctl restart vmagent
+```
+
 ## Use `EPAZOTE_*` Variables In `if_not.cmd`
 
 Fallback commands receive service context through environment variables, which makes alert scripts easier to write:

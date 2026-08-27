@@ -1,6 +1,6 @@
 [package]
 name = "epazote"
-version = "3.7.1"
+version = "4.0.0"
 authors = ["Nicolas Embriz <nbari@tequila.io>"]
 description = "Automated HTTP (microservices) supervisor 🌿"
 documentation = "https://docs.rs/epazote/latest/epazote/"
@@ -69,6 +69,11 @@ tracing-opentelemetry = "0.33"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 url = "2"
 x509-parser = "0.18"
+
+[target.'cfg(unix)'.dependencies]
+# Used to signal the whole process group of a timed-out command, so its
+# descendants are killed too and not just the shell we spawned.
+libc = "0.2"
 
 [build-dependencies]
 built = { version = "0.8.1", features = ["git2"] }

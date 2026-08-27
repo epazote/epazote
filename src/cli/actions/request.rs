@@ -3,7 +3,7 @@ use crate::cli::{
         FallbackContext, FallbackServiceType, FallbackState, execute_fallbacks, get_fallback_state,
         metrics::ServiceMetrics, reset_fallback_state, should_continue_fallback,
     },
-    config::{BodyType, Expect, ServiceDetails, regex_source},
+    config::{BodyType, Expect, HttpMethod, ServiceDetails, regex_source},
     telemetry,
 };
 use anyhow::{Result, anyhow};
@@ -15,7 +15,11 @@ use reqwest::{
     header::{HeaderMap, HeaderValue},
 };
 use serde_json::Value;
-use std::{collections::HashMap, fmt::Write as _, sync::Arc};
+use std::{
+    collections::HashMap,
+    fmt::Write as _,
+    sync::{Arc, LazyLock, RwLock},
+};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
@@ -91,11 +95,27 @@ fn format_http_response_failure_log(
     )
 }
 
+/// Maps the configured method to a `Method` constant. Formatting the enum to a
+/// `String` and re-parsing it allocated on every single request.
+const fn http_method(method: HttpMethod) -> Method {
+    match method {
+        HttpMethod::Connect => Method::CONNECT,
+        HttpMethod::Delete => Method::DELETE,
+        HttpMethod::Get => Method::GET,
+        HttpMethod::Head => Method::HEAD,
+        HttpMethod::Options => Method::OPTIONS,
+        HttpMethod::Patch => Method::PATCH,
+        HttpMethod::Post => Method::POST,
+        HttpMethod::Put => Method::PUT,
+        HttpMethod::Trace => Method::TRACE,
+    }
+}
+
 /// Builds a `reqwest::RequestBuilder` from the service details.
 ///
 /// # Errors
 ///
-/// Returns an error if the URL is missing, the method is invalid, or the request cannot be built.
+/// Returns an error if the URL is missing or the request cannot be built.
 pub fn build_http_request(
     client: &Client,
     service_details: &ServiceDetails,
@@ -105,7 +125,7 @@ pub fn build_http_request(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("No URL provided"))?;
 
-    let method = Method::from_bytes(service_details.method.to_string().as_bytes())?;
+    let method = http_method(service_details.method);
 
     let mut request = client.request(method, url);
 
@@ -370,9 +390,14 @@ async fn match_response_expectations(
             let window = max_bytes.map_or(DEFAULT_SCAN_WINDOW_BYTES, |m| {
                 m.min(DEFAULT_SCAN_WINDOW_BYTES)
             });
-            let scan =
-                scan_response_body(response, window, None, body_not_regex.as_ref(), json_limit)
-                    .await?;
+            let scan = scan_response_body(
+                response,
+                window,
+                None,
+                body_not_regex.as_deref(),
+                json_limit,
+            )
+            .await?;
 
             if scan.body_not_found {
                 return Ok(Some(forbidden_body_mismatch(expect)));
@@ -396,8 +421,8 @@ async fn match_response_expectations(
     let scan = scan_response_body(
         response,
         max_bytes.unwrap_or(DEFAULT_SCAN_WINDOW_BYTES),
-        body_regex.as_ref(),
-        body_not_regex.as_ref(),
+        body_regex.as_deref(),
+        body_not_regex.as_deref(),
         0,
     )
     .await?;
@@ -453,7 +478,35 @@ fn read_chunk_error(e: &reqwest::Error) -> anyhow::Error {
     }
 }
 
-fn compile_body_pattern(input: &str) -> Result<BodyPattern> {
+// Compiled `body`/`body_not` patterns, keyed by their configuration string.
+// Patterns are static config, so compiling them on every response was pure
+// waste: compilation costs orders of magnitude more than the match itself
+// (~268us vs ~6us for a complex pattern over a 64KiB body). The cache is
+// bounded by the number of distinct patterns in the config.
+static BODY_PATTERN_CACHE: LazyLock<RwLock<HashMap<String, Arc<BodyPattern>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Returns the compiled pattern for `input`, compiling it only on first use.
+fn compile_body_pattern(input: &str) -> Result<Arc<BodyPattern>> {
+    {
+        // A poisoned lock is not fatal here: fall through and recompile.
+        if let Ok(cache) = BODY_PATTERN_CACHE.read()
+            && let Some(pattern) = cache.get(input)
+        {
+            return Ok(Arc::clone(pattern));
+        }
+    }
+
+    let pattern = Arc::new(build_body_pattern(input)?);
+
+    if let Ok(mut cache) = BODY_PATTERN_CACHE.write() {
+        cache.insert(input.to_string(), Arc::clone(&pattern));
+    }
+
+    Ok(pattern)
+}
+
+fn build_body_pattern(input: &str) -> Result<BodyPattern> {
     let pattern = regex_source(input)?;
     let regex = Regex::new(&pattern).map_err(|e| {
         error!(
@@ -629,10 +682,20 @@ async fn collect_response_bytes(
     response: reqwest::Response,
     max_bytes: Option<usize>,
 ) -> Result<Vec<u8>> {
-    let mut stream = response.bytes_stream();
     let max_bytes = max_bytes.unwrap_or(usize::MAX);
+
+    // Size the buffer up front when the server advertises a length, so a large
+    // body is not grown chunk by chunk. Bounded by `max_bytes` so a bogus
+    // Content-Length cannot be used to force a huge allocation.
+    let capacity = response
+        .content_length()
+        .and_then(|length| usize::try_from(length).ok())
+        .unwrap_or(0)
+        .min(max_bytes);
+
+    let mut stream = response.bytes_stream();
     let mut total_bytes_read = 0;
-    let mut buffer = Vec::new();
+    let mut buffer = Vec::with_capacity(capacity);
 
     while let Some(chunk) = stream.next().await {
         match chunk {
@@ -991,6 +1054,60 @@ mod tests {
         });
 
         assert!(!json_contains(&expected, &actual));
+    }
+
+    /// Every configured method must map to the matching `Method` constant.
+    /// The mapping replaced a per-request string allocation, so a wrong arm
+    /// would silently send the wrong verb.
+    #[test]
+    fn test_http_method_maps_every_variant() {
+        for (configured, expected) in [
+            (HttpMethod::Connect, Method::CONNECT),
+            (HttpMethod::Delete, Method::DELETE),
+            (HttpMethod::Get, Method::GET),
+            (HttpMethod::Head, Method::HEAD),
+            (HttpMethod::Options, Method::OPTIONS),
+            (HttpMethod::Patch, Method::PATCH),
+            (HttpMethod::Post, Method::POST),
+            (HttpMethod::Put, Method::PUT),
+            (HttpMethod::Trace, Method::TRACE),
+        ] {
+            assert_eq!(http_method(configured), expected);
+            // The old path went through the enum's own formatting, so keep
+            // the two agreeing.
+            assert_eq!(http_method(configured).as_str(), configured.to_string());
+        }
+    }
+
+    /// The pattern cache must hand back the same compiled regex instead of
+    /// recompiling it on every response.
+    #[test]
+    fn test_compile_body_pattern_is_cached() {
+        let first = compile_body_pattern("cache-probe-pattern").expect("should compile");
+        let second = compile_body_pattern("cache-probe-pattern").expect("should compile");
+
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "repeated compilation must reuse the cached pattern"
+        );
+    }
+
+    /// Caching must not swallow invalid patterns.
+    #[test]
+    fn test_compile_body_pattern_rejects_invalid_regex() {
+        assert!(compile_body_pattern(r#"r"([""#).is_err());
+    }
+
+    /// Anchoring metadata must survive caching, since it decides whether a
+    /// match is valid on a mid-body window.
+    #[test]
+    fn test_compile_body_pattern_preserves_anchors() {
+        let anchored = compile_body_pattern(r#"r"^start""#).expect("should compile");
+        assert!(anchored.needs_start, "^ must be detected as start-anchored");
+        assert!(!anchored.needs_end);
+
+        let cached = compile_body_pattern(r#"r"^start""#).expect("should compile");
+        assert!(cached.needs_start, "anchors must survive a cache hit");
     }
 
     #[tokio::test]

@@ -164,6 +164,36 @@ async fn run_service(
     }
 }
 
+/// Records certificate expiry for HTTPS services.
+///
+/// A failed certificate check must not abort the scan: returning early here
+/// skips the HTTP request, so the configured `if_not` fallback never runs for
+/// an unreachable HTTPS service - exactly when recovery is needed. Health is
+/// decided by the HTTP expectations instead.
+async fn check_certificate_expiry(
+    url: &str,
+    service_name: &str,
+    service_details: &ServiceDetails,
+    metrics: &ServiceMetrics,
+    ssl_cache: &SslCheckCache,
+) {
+    if !url.starts_with("https://") {
+        return;
+    }
+
+    if let Err(error) = check_ssl_certificate(
+        url,
+        service_name,
+        metrics,
+        ssl_cache,
+        service_details.timeout,
+    )
+    .await
+    {
+        warn!("SSL certificate check failed for '{service_name}': {error}");
+    }
+}
+
 /// `scan_service` performs the actual scan of the service
 async fn scan_service(
     service_name: &str,
@@ -183,9 +213,7 @@ async fn scan_service(
 
             let url = request.url().to_string();
 
-            if url.starts_with("https://") {
-                check_ssl_certificate(&url, service_name, metrics, ssl_cache).await?;
-            }
+            check_certificate_expiry(&url, service_name, service_details, metrics, ssl_cache).await;
 
             debug!("HTTP request: {:?}", request);
 
@@ -233,21 +261,40 @@ async fn scan_service(
         ServiceAction::Command(command) => {
             debug!("Executing command: {}", command);
 
-            // A spawn failure (e.g. a missing SHELL binary) is treated as a failed
-            // check (exit code 1), but surface the underlying cause so it is not
-            // silently indistinguishable from the command running and exiting 1.
-            let exit_status = match execute_command(command).await {
-                Ok(code) => code,
-                Err(e) => {
-                    warn!(
-                        "Failed to execute command for {service_name}: {e}; treating as exit code 1"
-                    );
-                    1
-                }
-            };
+            let execution = execute_command(command, service_details.timeout).await;
+
+            // Record how long the check took, mirroring the HTTP path so
+            // command services appear in the same dashboards.
+            let response_time = start_time.elapsed().as_secs_f64();
+            metrics
+                .epazote_response_time
+                .with_label_values(&[service_name])
+                .observe(response_time);
+
             let expected_status = expected_command_status(service_details)?;
 
-            if exit_status == expected_status {
+            // A command that could not run (spawn failure, timeout) never
+            // produced an exit status, so it must not be compared against the
+            // expected one. Synthesising exit code 1 here reported a hung
+            // command as healthy whenever `expect.status` was itself 1.
+            let (is_match, actual_status, error) = match execution {
+                Ok(code) => (code == expected_status, Some(code), "command_failed"),
+                Err(e) => {
+                    warn!("Failed to execute command for {service_name}: {e}");
+                    (false, None, "command_error")
+                }
+            };
+
+            // Command checks previously recorded no metrics at all, so a
+            // failing service was invisible to Prometheus. Set the gauge here
+            // the way the HTTP path does rather than relying on the scan
+            // returning an error, which only happens when a fallback fails.
+            metrics
+                .epazote_status
+                .with_label_values(&[service_name])
+                .set(i64::from(is_match));
+
+            if is_match {
                 reset_fallback_state(service_name, &counters).await;
             } else if let Some(action) = &service_details.expect.if_not
                 && should_continue_fallback(service_name, &counters, action).await
@@ -259,8 +306,8 @@ async fn scan_service(
                     service_name,
                     service_type: FallbackServiceType::Command,
                     expected_status: Some(expected_status),
-                    actual_status: Some(exit_status),
-                    error: "command_failed",
+                    actual_status,
+                    error,
                     failure_count: state.consecutive_failures,
                     threshold: action.threshold.unwrap_or(1),
                     url: None,
@@ -750,6 +797,313 @@ services:
         assert_eq!(state.fallback_executions, 0);
     }
 
+    /// Regression: a command that never ran must not be compared against the
+    /// expected exit status. Synthesising exit code 1 reported a hung command
+    /// as healthy whenever `expect.status` was itself 1 - no fallback, and a
+    /// green status metric for a service that is not being checked at all.
+    #[tokio::test]
+    async fn test_scan_service_command_timeout_is_unhealthy_when_expecting_exit_1() {
+        let (_tempdir, script_path, output_path) =
+            create_env_capture_script(&["EPAZOTE_SERVICE_NAME", "EPAZOTE_ERROR"]);
+
+        let mut service_details =
+            mock_service_details(Some("sleep 30"), 1, Some(script_path.as_str()));
+        service_details.timeout = Duration::from_millis(200);
+
+        let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let ssl_cache = new_ssl_check_cache();
+
+        scan_service(
+            "expects-exit-1",
+            &service_details,
+            &mock_action("sleep 30"),
+            &metrics,
+            Arc::clone(&counters),
+            &ssl_cache,
+        )
+        .await
+        .expect("a failed check is not a scan error");
+
+        assert_eq!(
+            metrics
+                .epazote_status
+                .with_label_values(&["expects-exit-1"])
+                .get(),
+            0,
+            "a command that could not run must never be reported healthy"
+        );
+        assert!(
+            output_path.exists(),
+            "a command that could not run must trigger the fallback"
+        );
+    }
+
+    /// A genuine exit code 1 must still satisfy `expect.status: 1`, so the fix
+    /// above does not make every command check fail.
+    #[tokio::test]
+    async fn test_scan_service_command_genuine_exit_1_matches_expected() {
+        let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let ssl_cache = new_ssl_check_cache();
+
+        let service_details = mock_service_details(Some("exit 1"), 1, None);
+
+        scan_service(
+            "genuine-exit-1",
+            &service_details,
+            &mock_action("exit 1"),
+            &metrics,
+            Arc::clone(&counters),
+            &ssl_cache,
+        )
+        .await
+        .expect("scan should succeed");
+
+        assert_eq!(
+            metrics
+                .epazote_status
+                .with_label_values(&["genuine-exit-1"])
+                .get(),
+            1,
+            "an actual exit code 1 must still match expect.status: 1"
+        );
+    }
+
+    /// Regression: command checks must report their health. They previously
+    /// recorded no metrics at all, so a failing `test` service was invisible
+    /// to Prometheus - `epazote_status == 0` could never fire for it.
+    #[tokio::test]
+    async fn test_scan_service_command_records_status_metric() {
+        let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
+        let ssl_cache = new_ssl_check_cache();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        // A passing check reports 1.
+        let healthy = mock_service_details(Some("true"), 0, None);
+        scan_service(
+            "healthy-cmd",
+            &healthy,
+            &mock_action("true"),
+            &metrics,
+            Arc::clone(&counters),
+            &ssl_cache,
+        )
+        .await
+        .expect("healthy scan should succeed");
+
+        assert_eq!(
+            metrics
+                .epazote_status
+                .with_label_values(&["healthy-cmd"])
+                .get(),
+            1,
+            "a passing command check must report status 1"
+        );
+
+        // A failing check reports 0, without needing the scan to error.
+        let failing = mock_service_details(Some("false"), 0, None);
+        scan_service(
+            "failing-cmd",
+            &failing,
+            &mock_action("false"),
+            &metrics,
+            Arc::clone(&counters),
+            &ssl_cache,
+        )
+        .await
+        .expect("a failed check is not a scan error");
+
+        assert_eq!(
+            metrics
+                .epazote_status
+                .with_label_values(&["failing-cmd"])
+                .get(),
+            0,
+            "a failing command check must report status 0"
+        );
+    }
+
+    /// Command checks must also record how long they took, so they appear in
+    /// the same response-time panels as HTTP services.
+    #[tokio::test]
+    async fn test_scan_service_command_records_response_time() {
+        let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
+        let ssl_cache = new_ssl_check_cache();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let service_details = mock_service_details(Some("true"), 0, None);
+        scan_service(
+            "timed-cmd",
+            &service_details,
+            &mock_action("true"),
+            &metrics,
+            Arc::clone(&counters),
+            &ssl_cache,
+        )
+        .await
+        .expect("scan should succeed");
+
+        assert_eq!(
+            metrics
+                .epazote_response_time
+                .with_label_values(&["timed-cmd"])
+                .get_sample_count(),
+            1,
+            "a command check must record a response-time observation"
+        );
+    }
+
+    /// A failing check must not inflate `epazote_failures_total`: that counter
+    /// tracks scan errors, and the HTTP path does not increment it either.
+    #[tokio::test]
+    async fn test_scan_service_command_failure_does_not_count_as_scan_error() {
+        let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
+        let ssl_cache = new_ssl_check_cache();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let service_details = mock_service_details(Some("false"), 0, None);
+        scan_service(
+            "quiet-failure",
+            &service_details,
+            &mock_action("false"),
+            &metrics,
+            Arc::clone(&counters),
+            &ssl_cache,
+        )
+        .await
+        .expect("a failed check is not a scan error");
+
+        assert_eq!(
+            metrics
+                .epazote_failures_total
+                .with_label_values(&["quiet-failure"])
+                .get(),
+            0,
+            "a failed check must not be counted as a scan error"
+        );
+    }
+
+    /// Regression: a failed SSL certificate check must not abort the scan
+    /// before the HTTP request is made. Previously the check was `?`-propagated,
+    /// so an unreachable HTTPS service returned early and its configured
+    /// `if_not` fallback never ran - the one case recovery exists for.
+    #[tokio::test]
+    async fn test_scan_service_https_unreachable_still_runs_fallback() {
+        let (_tempdir, script_path, output_path) =
+            create_env_capture_script(&["EPAZOTE_SERVICE_NAME", "EPAZOTE_ERROR"]);
+
+        // A closed port, so both the SSL check and the HTTP request fail.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind test listener");
+        let url = format!(
+            "https://{}/health",
+            listener.local_addr().expect("Failed to get local addr")
+        );
+        drop(listener);
+
+        let service_details = ServiceDetails {
+            every: Duration::from_secs(1),
+            expect: Expect {
+                status: Some(200),
+                header: None,
+                body: None,
+                body_not: None,
+                json: None,
+                if_not: Some(Action {
+                    cmd: Some(script_path),
+                    http: None,
+                    stop: None,
+                    threshold: Some(1),
+                    timeout: None,
+                }),
+            },
+            follow_redirects: Some(true),
+            headers: None,
+            max_bytes: None,
+            test: None,
+            timeout: Duration::from_millis(500),
+            url: Some(url),
+            method: HttpMethod::Get,
+            body: None,
+        };
+
+        let action = ServiceAction::Url(Client::new());
+        let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let ssl_cache = new_ssl_check_cache();
+
+        let result = scan_service(
+            "https-unreachable-service",
+            &service_details,
+            &action,
+            &metrics,
+            Arc::clone(&counters),
+            &ssl_cache,
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "unreachable service should report an error"
+        );
+        assert!(
+            output_path.exists(),
+            "fallback command must run for an unreachable HTTPS service"
+        );
+    }
+
+    /// Regression: a check command that never returns must not stall the
+    /// service task. Without a timeout the scan blocked forever, silently
+    /// stopping every future scan for that service.
+    #[tokio::test]
+    async fn test_scan_service_command_timeout_does_not_hang() {
+        let (_tempdir, script_path, output_path) =
+            create_env_capture_script(&["EPAZOTE_SERVICE_NAME"]);
+
+        let mut service_details =
+            mock_service_details(Some("sleep 30"), 0, Some(script_path.as_str()));
+        service_details.timeout = Duration::from_millis(200);
+
+        let action = mock_action("sleep 30");
+        let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let ssl_cache = new_ssl_check_cache();
+
+        let started = std::time::Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            scan_service(
+                "hanging-command-service",
+                &service_details,
+                &action,
+                &metrics,
+                Arc::clone(&counters),
+                &ssl_cache,
+            ),
+        )
+        .await
+        .expect("scan_service must not hang past the service timeout");
+
+        result.expect("a timed-out check is a failed check, not a scan error");
+
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "scan should return near the configured timeout, took {:?}",
+            started.elapsed()
+        );
+        assert!(
+            output_path.exists(),
+            "a command that exceeds the timeout must count as a failed check and run the fallback"
+        );
+    }
+
     #[tokio::test]
     async fn test_scan_service_http_request_error_sets_env_vars() {
         let (_tempdir, script_path, output_path) = create_env_capture_script(&[
@@ -782,6 +1136,7 @@ services:
                     http: None,
                     stop: None,
                     threshold: Some(1),
+                    timeout: None,
                 }),
             },
             follow_redirects: Some(true),

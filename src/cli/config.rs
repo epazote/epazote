@@ -252,7 +252,27 @@ pub struct Action {
     pub http: Option<String>,
     pub stop: Option<usize>,
     pub threshold: Option<usize>,
+
+    // Recovery actions are not health probes: a restart legitimately takes far
+    // longer than the `timeout` used to decide whether a service answers.
+    // Applies to both `cmd` and `http`. Kept optional so `Action::default()`
+    // cannot silently mean "no time at all".
+    #[serde(default, deserialize_with = "parse_optional_duration")]
+    pub timeout: Option<Duration>,
 }
+
+impl Action {
+    /// Time budget for this fallback's actions, falling back to a generous
+    /// default so a slow restart completes while a hung one still cannot
+    /// stall the service forever.
+    #[must_use]
+    pub fn fallback_timeout(&self) -> Duration {
+        self.timeout.unwrap_or(DEFAULT_FALLBACK_TIMEOUT)
+    }
+}
+
+// Default time budget for `if_not` recovery commands.
+const DEFAULT_FALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 
 // Default timeout value
 const fn default_timeout() -> Duration {
@@ -266,6 +286,19 @@ where
 {
     let s = String::deserialize(deserializer)?;
     parse_duration_str(&s).map_err(serde::de::Error::custom)
+}
+
+/// Parses an optional duration, so an absent field stays `None` instead of
+/// collapsing to a zero `Duration`.
+fn parse_optional_duration<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+
+    value
+        .map(|s| parse_duration_str(&s).map_err(serde::de::Error::custom))
+        .transpose()
 }
 
 /// Converts a string like "5s", "3m", "1h", "2d" into `Duration`.
@@ -297,6 +330,63 @@ fn parse_duration_str(input: &str) -> Result<Duration> {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+    /// A recovery command must not inherit the health-probe timeout: a
+    /// restart routinely outlives the few seconds allowed for a probe.
+    #[test]
+    fn test_fallback_timeout_defaults_to_generous_budget() {
+        let action = Action::default();
+
+        assert_eq!(action.fallback_timeout(), Duration::from_secs(300));
+        assert!(
+            action.fallback_timeout() > default_timeout(),
+            "fallback budget must exceed the health-probe timeout"
+        );
+    }
+
+    /// `Action::default()` must not mean "no time at all".
+    #[test]
+    fn test_fallback_timeout_default_is_not_zero() {
+        assert!(!Action::default().fallback_timeout().is_zero());
+    }
+
+    #[test]
+    fn test_fallback_timeout_is_configurable() {
+        let config: ServiceDetails = serde_yaml_ng::from_str(
+            r#"
+every: 1m
+test: "true"
+expect:
+  status: 0
+  if_not:
+    cmd: "systemctl restart app"
+    timeout: 15m
+"#,
+        )
+        .expect("config should parse");
+
+        let if_not = config.expect.if_not.expect("if_not should be set");
+
+        assert_eq!(if_not.timeout, Some(Duration::from_mins(15)));
+        assert_eq!(if_not.fallback_timeout(), Duration::from_mins(15));
+    }
+
+    #[test]
+    fn test_fallback_timeout_rejects_unitless_value() {
+        let result: Result<ServiceDetails, _> = serde_yaml_ng::from_str(
+            r#"
+every: 1m
+test: "true"
+expect:
+  status: 0
+  if_not:
+    cmd: "true"
+    timeout: 30
+"#,
+        );
+
+        assert!(result.is_err(), "a unitless duration must be rejected");
+    }
+
     use serde_json::json;
     use std::io::Write;
 
