@@ -58,9 +58,15 @@ jobs:
   test:
     name: Test
     strategy:
+      # Both Linux architectures that deploy.yml ships are tested here, since
+      # Linux is the primary target. macOS keeps a single leg: the Intel
+      # runner image is on its way out, and x86_64-apple-darwin is still
+      # built at release time.
+      fail-fast: false
       matrix:
         os:
           - ubuntu-latest
+          - ubuntu-24.04-arm
           - macOS-latest
     runs-on: ${{ matrix.os }}
     needs:
@@ -75,6 +81,11 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: test-${{ matrix.os }}
+
+      - name: Show host target
+        run: |
+          uname -sm
+          rustc -vV | grep host
 
       - name: build
         run: cargo build --locked --all-targets --all-features

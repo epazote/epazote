@@ -1,6 +1,10 @@
 Changelog
 =========
 
+## Unreleased
+
+- **aarch64 release artifacts**: releases now also build `aarch64-unknown-linux-musl` (on a native ARM runner) and `aarch64-apple-darwin`, so each release ships eight artifacts instead of four — tarballs, RPM and DEB for both architectures. One architecture failing no longer cancels the others, so a partial build cannot silently produce a partial release.
+
 ## 4.0.0 (2026-08-27)
 
 ### Breaking changes
