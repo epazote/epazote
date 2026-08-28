@@ -1,6 +1,6 @@
 [package]
 name = "epazote"
-version = "4.0.0"
+version = "4.0.1"
 authors = ["Nicolas Embriz <nbari@tequila.io>"]
 description = "Automated HTTP (microservices) supervisor 🌿"
 documentation = "https://docs.rs/epazote/latest/epazote/"
