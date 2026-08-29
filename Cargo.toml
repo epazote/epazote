@@ -1,6 +1,6 @@
 [package]
 name = "epazote"
-version = "4.0.1"
+version = "4.1.0"
 authors = ["Nicolas Embriz <nbari@tequila.io>"]
 description = "Automated HTTP (microservices) supervisor 🌿"
 documentation = "https://docs.rs/epazote/latest/epazote/"
@@ -11,6 +11,20 @@ keywords = ["metrics", "supervisor", "monitoring"]
 categories = ["command-line-utilities", "command-line-interface"]
 edition = "2024"
 license = "BSD-3-Clause"
+
+# Release binaries favour a small, self-contained artifact for the RPM/DEB
+# packages. Thin LTO, a single codegen unit and stripping symbols cut the binary
+# by roughly a third with no behaviour change. panic stays the default "unwind"
+# so Drop handlers still run on a panic - notably Command's kill_on_drop, which
+# reaps a timed-out fallback child instead of leaking it when the process aborts.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+# Do not add `panic = "abort"` here: src/lib.rs refuses to compile without
+# unwinding, which contains a panicking service task instead of killing the
+# whole supervisor, and keeps Drop reaping timed-out fallback commands.
 
 [lints.rust]
 warnings = "deny"

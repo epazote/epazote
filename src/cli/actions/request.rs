@@ -1,7 +1,8 @@
 use crate::cli::{
     actions::{
-        FallbackContext, FallbackServiceType, FallbackState, execute_fallbacks, get_fallback_state,
-        metrics::ServiceMetrics, reset_fallback_state, should_continue_fallback,
+        FallbackContext, FallbackServiceType, FallbackState, execute_fallbacks_tracking_stop,
+        get_fallback_state, metrics::ServiceMetrics, reset_fallback_state,
+        should_continue_fallback,
     },
     config::{BodyType, Expect, HttpMethod, ServiceDetails, regex_source},
     telemetry,
@@ -180,6 +181,16 @@ pub async fn handle_http_response<S: BuildHasher>(
                 // error, otherwise remediation would be silently skipped.
                 warn!("Service '{service_name}' body read failed, running fallback path: {e}");
 
+                // Mark the service down before the fallback runs. This path
+                // returns early, so it never reaches the metrics update below,
+                // and the fallback command it is about to run is serialized
+                // process-wide - it can sit queued behind another service's
+                // restart while this gauge still reads healthy.
+                metrics
+                    .epazote_status
+                    .with_label_values(&[service_name])
+                    .set(0);
+
                 if let Some(action) = &service_details.expect.if_not
                     && should_continue_fallback(service_name, &counters, action).await
                 {
@@ -198,7 +209,8 @@ pub async fn handle_http_response<S: BuildHasher>(
                         test: None,
                     };
 
-                    execute_fallbacks(action, &context, service_name).await?;
+                    execute_fallbacks_tracking_stop(action, &context, service_name, &counters)
+                        .await?;
                 }
 
                 return Err(e);
@@ -304,7 +316,7 @@ pub async fn handle_http_response<S: BuildHasher>(
             test: None,
         };
 
-        execute_fallbacks(action, &context, service_name).await?;
+        execute_fallbacks_tracking_stop(action, &context, service_name, &counters).await?;
     }
 
     Ok(is_match)
@@ -2980,6 +2992,179 @@ services:
         .expect("Failed to handle response");
 
         assert!(!rs);
+    }
+
+    /// Regression: the body-read error path returns early, before the normal
+    /// metrics update, so it must mark the service down itself. Otherwise the
+    /// gauge keeps reporting the last healthy scan while the fallback - which
+    /// is serialized process-wide - runs or waits its turn.
+    #[tokio::test]
+    async fn test_handle_http_response_body_read_error_marks_service_down() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind listener");
+        let addr = listener.local_addr().expect("Failed to get local addr");
+
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                // Claim 100 bytes but deliver only a few, then drop the connection.
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial")
+                    .await;
+                let _ = socket.flush().await;
+            }
+        });
+
+        let yaml = format!(
+            r"
+---
+services:
+  test-read-error:
+    url: http://{addr}/
+    every: 30s
+    expect:
+      status: 200
+      body: pg_up
+      if_not:
+        cmd: exit 0
+    "
+        );
+
+        let config = create_config(&yaml);
+        let service = config
+            .services
+            .get("test-read-error")
+            .expect("Service not found");
+
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let metrics = ServiceMetrics::new().expect("Failed to create metrics");
+
+        // The previous scan succeeded, so an untouched gauge still reads UP.
+        metrics
+            .epazote_status
+            .with_label_values(&["test-read-error"])
+            .set(1);
+
+        let rs = handle_http_response(
+            "test-read-error",
+            service,
+            response,
+            &metrics,
+            Arc::clone(&counters),
+        )
+        .await;
+
+        assert!(rs.is_err(), "read error should propagate, got {rs:?}");
+        assert_eq!(
+            metrics
+                .epazote_status
+                .with_label_values(&["test-read-error"])
+                .get(),
+            0,
+            "a failed body read must mark the service down, not leave the last healthy value"
+        );
+    }
+
+    /// The ordinary failure path - the service answers, but not as expected.
+    /// The gauge must be written before the fallback runs, because that
+    /// fallback is serialized across every service and can block for as long
+    /// as the fallback timeout allows.
+    #[tokio::test]
+    async fn test_handle_http_response_marks_service_down_before_running_fallback() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/")
+            .with_status(500)
+            .create_async()
+            .await;
+
+        // An endpoint that accepts and never answers keeps the fallback in
+        // flight while the gauge is inspected, without taking the process-wide
+        // fallback command lock (which would couple this test to every other
+        // test that runs a fallback command).
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind listener");
+        let silent_addr = silent.local_addr().expect("Failed to get local addr");
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = silent.accept() {
+                held.push(socket);
+            }
+        });
+
+        let yaml = format!(
+            r"
+---
+services:
+  mismatch:
+    url: {}/
+    every: 30s
+    expect:
+      status: 200
+      if_not:
+        http: http://{silent_addr}/alert
+        timeout: 2s
+    ",
+            server.url()
+        );
+
+        let config = create_config(&yaml);
+        let service = config.services.get("mismatch").expect("Service not found");
+
+        let response = reqwest::Client::new()
+            .get(format!("{}/", server.url()))
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let metrics = ServiceMetrics::new().expect("Failed to create metrics");
+
+        // The previous scan succeeded, so an untouched gauge still reads UP.
+        metrics
+            .epazote_status
+            .with_label_values(&["mismatch"])
+            .set(1);
+
+        let handle = handle_http_response(
+            "mismatch",
+            service,
+            response,
+            &metrics,
+            Arc::clone(&counters),
+        );
+
+        let status_during_fallback = async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            metrics
+                .epazote_status
+                .with_label_values(&["mismatch"])
+                .get()
+        };
+
+        let (result, status_during_fallback) = tokio::join!(handle, status_during_fallback);
+
+        assert!(
+            result.is_err(),
+            "the unanswered fallback endpoint is reported as an error"
+        );
+        assert_eq!(
+            status_during_fallback, 0,
+            "the service must report DOWN while its fallback is still running, not only after"
+        );
     }
 
     #[tokio::test]

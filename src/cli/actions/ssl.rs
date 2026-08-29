@@ -490,7 +490,7 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_ok(), "cached check should succeed: {result:?}");
+        assert!(result.is_ok(), "cached check should succeed");
         assert_eq!(
             builds.load(Ordering::SeqCst),
             0,

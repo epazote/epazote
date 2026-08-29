@@ -87,6 +87,14 @@ services:
                 cmd: systemctl restart vmagent
 ```
 
+Fallback commands run one at a time across every service, so a burst of simultaneous failures cannot fire a storm of restarts at the same instant. A `cmd` therefore has two phases, and `if_not.timeout` applies to each of them separately: it waits up to `timeout` for its turn in that queue, and once it starts it gets the whole of `timeout` to run in. In the worst case a single fallback occupies twice `timeout`.
+
+A command still queued when its wait runs out is skipped and logged rather than run late, and the next failed check retries it. `stop` bounds how many times the fallback actions actually execute, so an attempt in which *nothing ran at all* is handed back rather than spent on a restart that never happened — that is the case when `cmd` is the only action configured and it was skipped. When an `http` alert is also configured it was still sent, and that is an execution, so the attempt is kept and `stop` goes on capping how often you are alerted. Either way the failed check itself still counts toward `threshold`.
+
+The two phases are budgeted separately on purpose: sharing one deadline would let a queued restart start with only a sliver of time left and be killed part-way through — stopping a service without starting it again.
+
+`if_not.http` takes no part in this. Alerts are not serialized and run concurrently with the command, so an alert goes out even while its command is queued, and even if that command is ultimately skipped.
+
 ## Use `EPAZOTE_*` Variables In `if_not.cmd`
 
 Fallback commands receive service context through environment variables, which makes alert scripts easier to write:

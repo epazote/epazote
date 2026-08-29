@@ -2,7 +2,7 @@ use crate::cli::{
     actions::{
         Action, FallbackContext, FallbackServiceType, FallbackState,
         client::build_client,
-        execute_command, execute_fallbacks, get_fallback_state,
+        execute_command, execute_fallbacks_tracking_stop, get_fallback_state,
         metrics::{ServiceMetrics, metrics_server},
         request::{build_http_request, handle_http_response},
         reset_fallback_state, should_continue_fallback,
@@ -221,6 +221,17 @@ async fn scan_service(
             let response = match client.execute(request).await {
                 Ok(response) => response,
                 Err(error) => {
+                    // Mark the service down before the fallback runs, not
+                    // after. Fallback commands are serialized process-wide, so
+                    // this scan can sit queued behind another service's
+                    // restart; reporting the failure only once the fallback
+                    // returns would leave the gauge showing the last-known
+                    // state for as long as that queue takes.
+                    metrics
+                        .epazote_status
+                        .with_label_values(&[service_name])
+                        .set(0);
+
                     if let Some(action) = &service_details.expect.if_not
                         && should_continue_fallback(service_name, &counters, action).await
                     {
@@ -239,7 +250,8 @@ async fn scan_service(
                             test: None,
                         };
 
-                        execute_fallbacks(action, &context, service_name).await?;
+                        execute_fallbacks_tracking_stop(action, &context, service_name, &counters)
+                            .await?;
                     }
 
                     return Err(error.into());
@@ -314,7 +326,7 @@ async fn scan_service(
                     test: Some(command),
                 };
 
-                execute_fallbacks(action, &context, service_name).await?;
+                execute_fallbacks_tracking_stop(action, &context, service_name, &counters).await?;
             }
         }
     }
@@ -333,6 +345,37 @@ mod tests {
     use tokio::process::Command;
     use tokio::runtime::Runtime;
     use tokio::time::Duration;
+
+    /// An endpoint that accepts connections and never answers, so a fallback
+    /// HTTP action stays in flight until its own timeout. Used to observe what
+    /// the metrics say *while* a fallback is still running - without taking
+    /// the process-wide fallback command lock, which would couple the test to
+    /// every other test that runs a fallback command.
+    fn hanging_endpoint() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind test listener");
+        let addr = listener.local_addr().expect("Failed to get local addr");
+
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept() {
+                held.push(socket);
+            }
+        });
+
+        format!("http://{addr}/alert")
+    }
+
+    /// A fallback that stays in flight long enough to observe the metrics
+    /// mid-flight, without serializing against other tests.
+    fn slow_http_fallback() -> Action {
+        Action {
+            cmd: None,
+            http: Some(hanging_endpoint()),
+            stop: None,
+            threshold: Some(1),
+            timeout: Some(Duration::from_millis(1500)),
+        }
+    }
 
     /// Helper Function: Create Mock `ServiceDetails`
     fn mock_service_details(
@@ -1101,6 +1144,175 @@ services:
         assert!(
             output_path.exists(),
             "a command that exceeds the timeout must count as a failed check and run the fallback"
+        );
+    }
+
+    /// Regression: a failed probe must be visible in Prometheus before the
+    /// fallback runs. Fallback commands are serialized process-wide, so a scan
+    /// can sit queued behind another service's restart - reporting the failure
+    /// only after the fallback returns would leave the gauge stale for minutes.
+    #[tokio::test]
+    async fn test_scan_service_marks_service_down_before_running_fallback() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind test listener");
+        let url = format!(
+            "http://{}/health",
+            listener.local_addr().expect("Failed to get local addr")
+        );
+        drop(listener);
+
+        let service_details = ServiceDetails {
+            every: Duration::from_secs(1),
+            expect: Expect {
+                status: Some(200),
+                header: None,
+                body: None,
+                body_not: None,
+                json: None,
+                if_not: Some(slow_http_fallback()),
+            },
+            follow_redirects: Some(true),
+            headers: None,
+            max_bytes: None,
+            test: None,
+            timeout: Duration::from_millis(100),
+            url: Some(url),
+            method: HttpMethod::Get,
+            body: None,
+        };
+
+        let action = ServiceAction::Url(Client::new());
+        let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let ssl_cache = new_ssl_check_cache();
+
+        // The service was healthy on the previous scan, so a gauge left
+        // untouched still reads UP.
+        metrics
+            .epazote_status
+            .with_label_values(&["down-service"])
+            .set(1);
+
+        let scan = scan_service(
+            "down-service",
+            &service_details,
+            &action,
+            &metrics,
+            Arc::clone(&counters),
+            &ssl_cache,
+        );
+
+        let status_during_fallback = async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            metrics
+                .epazote_status
+                .with_label_values(&["down-service"])
+                .get()
+        };
+
+        let (result, status_during_fallback) = tokio::join!(scan, status_during_fallback);
+
+        assert!(
+            result.is_err(),
+            "Request error should still return an error"
+        );
+        assert_eq!(
+            status_during_fallback, 0,
+            "the service must report DOWN while its fallback is still running, not only after"
+        );
+    }
+
+    /// The same invariant on the command-check path: `epazote_status` must be
+    /// written before the fallback, which can block for as long as the
+    /// fallback timeout allows.
+    #[tokio::test]
+    async fn test_scan_service_command_check_marks_service_down_before_running_fallback() {
+        // A check that exits 1 against an expected 0, with a fallback that
+        // stays in flight while the gauge is inspected.
+        let mut service_details = mock_service_details(Some("exit 1"), 0, None);
+        service_details.expect.if_not = Some(slow_http_fallback());
+
+        let action = ServiceAction::Command("exit 1".to_string());
+        let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let ssl_cache = new_ssl_check_cache();
+
+        metrics
+            .epazote_status
+            .with_label_values(&["cmd-service"])
+            .set(1);
+
+        let scan = scan_service(
+            "cmd-service",
+            &service_details,
+            &action,
+            &metrics,
+            Arc::clone(&counters),
+            &ssl_cache,
+        );
+
+        let status_during_fallback = async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            metrics
+                .epazote_status
+                .with_label_values(&["cmd-service"])
+                .get()
+        };
+
+        let (result, status_during_fallback) = tokio::join!(scan, status_during_fallback);
+
+        assert!(
+            result.is_err(),
+            "the unanswered fallback endpoint is reported as a scan error"
+        );
+        assert_eq!(
+            status_during_fallback, 0,
+            "the service must report DOWN while its fallback is still running, not only after"
+        );
+    }
+
+    /// `epazote_failures_total` is owned by the scan loop, which increments it
+    /// when a scan returns an error. `scan_service` must not also count the
+    /// same failure - marking the service down early must not turn into a
+    /// double increment.
+    #[tokio::test]
+    async fn test_scan_service_leaves_the_failure_counter_to_the_run_loop() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind test listener");
+        let url = format!(
+            "http://{}/health",
+            listener.local_addr().expect("Failed to get local addr")
+        );
+        drop(listener);
+
+        let mut service_details = mock_service_details(None, 200, None);
+        service_details.url = Some(url);
+        service_details.timeout = Duration::from_millis(100);
+
+        let action = ServiceAction::Url(Client::new());
+        let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let ssl_cache = new_ssl_check_cache();
+
+        let result = scan_service(
+            "uncounted-service",
+            &service_details,
+            &action,
+            &metrics,
+            Arc::clone(&counters),
+            &ssl_cache,
+        )
+        .await;
+
+        assert!(result.is_err(), "an unreachable service must error");
+        assert_eq!(
+            metrics
+                .epazote_failures_total
+                .with_label_values(&["uncounted-service"])
+                .get(),
+            0,
+            "scan_service must leave the failure count to the scan loop, or the failure is counted twice"
         );
     }
 
