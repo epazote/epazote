@@ -1,3 +1,28 @@
+//! Automated HTTP (microservices) supervisor.
+//!
+//! # Compatibility
+//!
+//! The stable, semver-covered surface of this crate is the `epazote`
+//! **command line and its YAML configuration schema**. A release will not
+//! remove a configuration key, change what one means, or break an existing
+//! `epazote.yml`, outside of a major version.
+//!
+//! The **Rust API is not covered by semver.** `pub mod cli` exists so the
+//! binary and the integration tests can share one implementation, not as a
+//! library for downstream crates, and its types mirror the configuration
+//! file directly. Every new configuration key therefore becomes a new `pub`
+//! field on a `pub` struct - `cli::config::Action` gained `timeout` in 4.0.0
+//! and `group` in 4.2.0 - which is a source-breaking change for anyone
+//! constructing these types with an exhaustive struct literal.
+//!
+//! Requiring a major version for each new key would tie the configuration
+//! format's release cadence to a Rust API that has no known consumers, so the
+//! trade is made the other way round and stated here rather than left to be
+//! discovered. Code depending on these types should pin an exact version.
+//! `cli::config::Action`, the struct that has actually grown, implements
+//! `Default`, so building it with `..Default::default()` keeps a later field
+//! additive; the surrounding types do not, and have no such guarantee.
+
 // epazote must be built with `panic = "unwind"`, which is the default.
 //
 // This is checked here rather than left as a comment on the release profile

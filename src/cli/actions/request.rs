@@ -1,7 +1,7 @@
 use crate::cli::{
     actions::{
         FallbackContext, FallbackServiceType, FallbackState, execute_fallbacks_tracking_stop,
-        get_fallback_state, metrics::ServiceMetrics, reset_fallback_state,
+        get_fallback_state, metrics::ServiceMetrics, record_check_failure, reset_fallback_state,
         should_continue_fallback,
     },
     config::{BodyType, Expect, HttpMethod, ServiceDetails, regex_source},
@@ -183,13 +183,16 @@ pub async fn handle_http_response<S: BuildHasher>(
 
                 // Mark the service down before the fallback runs. This path
                 // returns early, so it never reaches the metrics update below,
-                // and the fallback command it is about to run is serialized
-                // process-wide - it can sit queued behind another service's
-                // restart while this gauge still reads healthy.
+                // and the fallback command it is about to run can take the
+                // whole `if_not.timeout` - twice that when it is grouped and
+                // has to wait its turn - while this gauge still reads healthy.
                 metrics
                     .epazote_status
                     .with_label_values(&[service_name])
                     .set(0);
+
+                let consecutive_failures = record_check_failure(service_name, &counters).await;
+                metrics.record_check_state(service_name, consecutive_failures);
 
                 if let Some(action) = &service_details.expect.if_not
                     && should_continue_fallback(service_name, &counters, action).await
@@ -209,8 +212,19 @@ pub async fn handle_http_response<S: BuildHasher>(
                         test: None,
                     };
 
-                    execute_fallbacks_tracking_stop(action, &context, service_name, &counters)
-                        .await?;
+                    // The fallback's own outcome is already logged and counted under
+                    // `epazote_fallback_executions_total`. It must not also become the
+                    // scan's error: `epazote_failures_total` counts scans that could not be
+                    // completed, and a fallback that was held back or could not reach its
+                    // endpoint is neither a scan error nor this scan's error to report.
+                    let _ = execute_fallbacks_tracking_stop(
+                        action,
+                        &context,
+                        service_name,
+                        &counters,
+                        metrics,
+                    )
+                    .await;
                 }
 
                 return Err(e);
@@ -233,16 +247,22 @@ pub async fn handle_http_response<S: BuildHasher>(
         Some(reasons.join("; "))
     };
 
-    if is_match {
-        reset_fallback_state(service_name, &counters).await;
-    }
-
     // Update metrics
     // Set service status to OK (1) if both status and body match
     metrics
         .epazote_status
         .with_label_values(&[service_name])
         .set(i64::from(is_match));
+
+    if is_match {
+        reset_fallback_state(service_name, &counters).await;
+        metrics.record_check_state(service_name, 0);
+    } else {
+        // Every failed check advances the streak, whether or not the service
+        // configures recovery.
+        let consecutive_failures = record_check_failure(service_name, &counters).await;
+        metrics.record_check_state(service_name, consecutive_failures);
+    }
 
     if telemetry::pretty_logs_enabled() {
         let formatted = if is_match {
@@ -316,7 +336,13 @@ pub async fn handle_http_response<S: BuildHasher>(
             test: None,
         };
 
-        execute_fallbacks_tracking_stop(action, &context, service_name, &counters).await?;
+        // The fallback's own outcome is already logged and counted under
+        // `epazote_fallback_executions_total`. It must not also become the
+        // scan's error: `epazote_failures_total` counts scans that could not be
+        // completed, and a fallback that was held back or could not reach its
+        // endpoint is neither a scan error nor this scan's error to report.
+        let _ = execute_fallbacks_tracking_stop(action, &context, service_name, &counters, metrics)
+            .await;
     }
 
     Ok(is_match)
@@ -2323,6 +2349,7 @@ services:
       body: r"\b(?:sopas|cit-02)\b" # match sopas or cit-02
       if_not:
         stop: 2
+        cmd: exit 0
     "#
         );
 
@@ -2365,7 +2392,7 @@ services:
 
         assert!(!rs1);
 
-        // Check counter after first attempt
+        // Check counter after second attempt
         let count1 = {
             let counters_locked = counters.lock().await;
             counters_locked
@@ -2399,7 +2426,7 @@ services:
                 .get("test-stop")
                 .map_or(0, |state| state.fallback_executions)
         };
-        assert_eq!(count2, 2, "Counter should be 1 after first attempt");
+        assert_eq!(count2, 2, "Counter should be 2 after second attempt");
     }
 
     #[tokio::test]
@@ -2996,8 +3023,8 @@ services:
 
     /// Regression: the body-read error path returns early, before the normal
     /// metrics update, so it must mark the service down itself. Otherwise the
-    /// gauge keeps reporting the last healthy scan while the fallback - which
-    /// is serialized process-wide - runs or waits its turn.
+    /// gauge keeps reporting the last healthy scan while the fallback runs -
+    /// or, when it is grouped, waits its turn.
     #[tokio::test]
     async fn test_handle_http_response_body_read_error_marks_service_down() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -3076,12 +3103,27 @@ services:
             0,
             "a failed body read must mark the service down, not leave the last healthy value"
         );
+        assert_eq!(
+            metrics
+                .epazote_consecutive_failures
+                .with_label_values(&["test-read-error"])
+                .get(),
+            1,
+            "a failed body read must publish its failure streak"
+        );
+        assert!(
+            metrics
+                .epazote_last_check_timestamp_seconds
+                .with_label_values(&["test-read-error"])
+                .get()
+                > 0,
+            "a failed body read must publish its completed-check timestamp"
+        );
     }
 
     /// The ordinary failure path - the service answers, but not as expected.
     /// The gauge must be written before the fallback runs, because that
-    /// fallback is serialized across every service and can block for as long
-    /// as the fallback timeout allows.
+    /// fallback can block for as long as the fallback timeout allows.
     #[tokio::test]
     async fn test_handle_http_response_marks_service_down_before_running_fallback() {
         let mut server = Server::new_async().await;
@@ -3092,9 +3134,8 @@ services:
             .await;
 
         // An endpoint that accepts and never answers keeps the fallback in
-        // flight while the gauge is inspected, without taking the process-wide
-        // fallback command lock (which would couple this test to every other
-        // test that runs a fallback command).
+        // flight while the gauge is inspected, without needing a long-running
+        // command to hold the scan open.
         let silent = std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind listener");
         let silent_addr = silent.local_addr().expect("Failed to get local addr");
         std::thread::spawn(move || {
@@ -3147,23 +3188,41 @@ services:
             Arc::clone(&counters),
         );
 
-        let status_during_fallback = async {
+        let metrics_during_fallback = async {
             tokio::time::sleep(Duration::from_millis(300)).await;
-            metrics
-                .epazote_status
-                .with_label_values(&["mismatch"])
-                .get()
+            (
+                metrics
+                    .epazote_status
+                    .with_label_values(&["mismatch"])
+                    .get(),
+                metrics
+                    .epazote_consecutive_failures
+                    .with_label_values(&["mismatch"])
+                    .get(),
+                metrics
+                    .epazote_last_check_timestamp_seconds
+                    .with_label_values(&["mismatch"])
+                    .get(),
+            )
         };
 
-        let (result, status_during_fallback) = tokio::join!(handle, status_during_fallback);
+        let (result, metrics_during_fallback) = tokio::join!(handle, metrics_during_fallback);
 
         assert!(
-            result.is_err(),
-            "the unanswered fallback endpoint is reported as an error"
+            result.is_ok(),
+            "the response arrived and merely failed its expectation, so the fallback's own              failure is not this scan's error"
         );
         assert_eq!(
-            status_during_fallback, 0,
-            "the service must report DOWN while its fallback is still running, not only after"
+            metrics_during_fallback.0, 0,
+            "the service must report DOWN while its fallback is still running"
+        );
+        assert_eq!(
+            metrics_during_fallback.1, 1,
+            "the failure streak must advance before its fallback finishes"
+        );
+        assert!(
+            metrics_during_fallback.2 > 0,
+            "the completed check must be timestamped before its fallback finishes"
         );
     }
 
@@ -3244,6 +3303,345 @@ services:
             .expect("State not found");
         assert_eq!(state.consecutive_failures, 1);
         assert_eq!(state.fallback_executions, 1);
+    }
+
+    /// An endpoint that deterministically drops fallback HTTP connections.
+    fn resetting_endpoint_url() -> String {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind test listener");
+        let addr = listener.local_addr().expect("Failed to get local addr");
+
+        std::thread::spawn(move || {
+            while let Ok((stream, _)) = listener.accept() {
+                drop(stream);
+            }
+        });
+
+        format!("http://{addr}/hook")
+    }
+
+    /// Regression: a response that arrived and merely failed its expectation is
+    /// not a scan error, however the fallback that follows it turns out.
+    ///
+    /// The fallback's failure was `?`-propagated out of `handle_http_response`,
+    /// so `scan_service` returned it and the scan loop counted it under
+    /// `epazote_failures_total` - a counter that means the request could not be
+    /// made or its body could not be read. Here the request was made, the
+    /// response was read, and the only thing wrong is a webhook that refuses
+    /// connections.
+    #[tokio::test]
+    async fn test_expectation_mismatch_with_a_failing_fallback_is_not_a_scan_error() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/")
+            .with_status(500)
+            .create_async()
+            .await;
+
+        let yaml = format!(
+            r"
+---
+services:
+  mismatch-with-broken-alert:
+    url: {}/
+    every: 30s
+    expect:
+      status: 200
+      if_not:
+        http: {}
+        timeout: 2s
+    ",
+            server.url(),
+            resetting_endpoint_url()
+        );
+
+        let config = create_config(&yaml);
+        let service = config
+            .services
+            .get("mismatch-with-broken-alert")
+            .expect("Service not found");
+
+        let response = reqwest::Client::new()
+            .get(format!("{}/", server.url()))
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let metrics = ServiceMetrics::new().expect("Failed to create metrics");
+
+        let matched = handle_http_response(
+            "mismatch-with-broken-alert",
+            service,
+            response,
+            &metrics,
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("an unreachable fallback endpoint is not this scan's error");
+
+        mock.assert_async().await;
+
+        assert!(!matched, "a 500 against 'status: 200' must not match");
+
+        assert_eq!(
+            metrics
+                .epazote_fallback_executions_total
+                .with_label_values(&[
+                    "mismatch-with-broken-alert",
+                    crate::cli::actions::metrics::FALLBACK_FAILURE
+                ])
+                .get(),
+            1,
+            "the failure belongs to the fallback metric, and must still be recorded there"
+        );
+    }
+
+    /// The grouped half of the cell above: on this path the fallback can also
+    /// fail by never running at all.
+    ///
+    /// The failing-alert variant already tripwires the same `let _ =`, but a
+    /// change made to this site specifically - rather than a `?` restored across
+    /// the board - would slip past it, and the skip is the shape group
+    /// contention actually produces.
+    #[tokio::test]
+    async fn test_expectation_mismatch_with_a_queued_command_is_not_a_scan_error() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/")
+            .with_status(500)
+            .create_async()
+            .await;
+
+        let yaml = format!(
+            r"
+---
+services:
+  mismatch-with-queued-command:
+    url: {}/
+    every: 30s
+    expect:
+      status: 200
+      if_not:
+        group: request-mismatch-queued
+        cmd: 'true'
+        timeout: 1s
+    ",
+            server.url()
+        );
+
+        let config = create_config(&yaml);
+        let service = config
+            .services
+            .get("mismatch-with-queued-command")
+            .expect("Service not found");
+
+        let response = reqwest::Client::new()
+            .get(format!("{}/", server.url()))
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let metrics = ServiceMetrics::new().expect("Failed to create metrics");
+
+        // Stand in for another member of the group whose command is still
+        // running, so this one can only be skipped.
+        let guard = crate::cli::actions::hold_group_lock("request-mismatch-queued").await;
+
+        let matched = handle_http_response(
+            "mismatch-with-queued-command",
+            service,
+            response,
+            &metrics,
+            Arc::clone(&counters),
+        )
+        .await
+        .expect("a command that never got its group lock is not this scan's error");
+
+        drop(guard);
+        mock.assert_async().await;
+
+        assert!(!matched, "a 500 against 'status: 200' must not match");
+
+        assert_eq!(
+            metrics
+                .epazote_fallback_executions_total
+                .with_label_values(&[
+                    "mismatch-with-queued-command",
+                    crate::cli::actions::metrics::FALLBACK_SKIPPED
+                ])
+                .get(),
+            1,
+            "the skip belongs to the fallback metric, and must still be recorded there"
+        );
+    }
+
+    /// Regression: when the body really could not be read, that is the error
+    /// the scan must report - not whatever the fallback went on to do.
+    ///
+    /// This path builds its error and returns it on the line after the
+    /// fallback, but `?` returned first, so a truncated response was reported
+    /// as an unreachable webhook and the actual read failure was discarded.
+    #[tokio::test]
+    async fn test_a_body_read_error_is_reported_over_the_fallbacks_error() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind listener");
+        let addr = listener.local_addr().expect("Failed to get local addr");
+
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                // Claim 100 bytes but deliver only a few, then drop the
+                // connection, so the body read fails mid-stream.
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial")
+                    .await;
+                let _ = socket.flush().await;
+            }
+        });
+
+        let yaml = format!(
+            r"
+---
+services:
+  read-error-with-broken-alert:
+    url: http://{addr}/
+    every: 30s
+    expect:
+      status: 200
+      body: pg_up
+      if_not:
+        http: {alert}
+        timeout: 2s
+    ",
+            addr = addr,
+            alert = resetting_endpoint_url()
+        );
+
+        let config = create_config(&yaml);
+        let service = config
+            .services
+            .get("read-error-with-broken-alert")
+            .expect("Service not found");
+
+        let response = reqwest::Client::new()
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let error = handle_http_response(
+            "read-error-with-broken-alert",
+            service,
+            response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect_err("a body that could not be read is a scan error");
+
+        let message = format!("{error:#}");
+
+        assert!(
+            !message.contains("/hook"),
+            "the fallback's unreachable endpoint must not stand in for the read failure, got: {message}"
+        );
+        assert!(
+            message.contains("Failed to read response chunk"),
+            "the scan must name the read it could not finish, got: {message}"
+        );
+    }
+
+    /// The grouped half of the body-read cell: a command held back by its group
+    /// must not stand in for the read failure either.
+    #[tokio::test]
+    async fn test_a_body_read_error_is_reported_over_a_queued_command() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind listener");
+        let addr = listener.local_addr().expect("Failed to get local addr");
+
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial")
+                    .await;
+                let _ = socket.flush().await;
+            }
+        });
+
+        let yaml = format!(
+            r"
+---
+services:
+  read-error-with-queued-command:
+    url: http://{addr}/
+    every: 30s
+    expect:
+      status: 200
+      body: pg_up
+      if_not:
+        group: request-read-error-queued
+        cmd: 'true'
+        timeout: 1s
+    "
+        );
+
+        let config = create_config(&yaml);
+        let service = config
+            .services
+            .get("read-error-with-queued-command")
+            .expect("Service not found");
+
+        let response = reqwest::Client::new()
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let guard = crate::cli::actions::hold_group_lock("request-read-error-queued").await;
+
+        let error = handle_http_response(
+            "read-error-with-queued-command",
+            service,
+            response,
+            &ServiceMetrics::new().expect("Failed to create metrics"),
+            Arc::clone(&counters),
+        )
+        .await
+        .expect_err("a body that could not be read is a scan error");
+
+        drop(guard);
+
+        let message = format!("{error:#}");
+
+        assert!(
+            message.contains("Failed to read response chunk"),
+            "the read failure is the scan's error, got: {message}"
+        );
+        assert!(
+            !message.contains("fallback command skipped"),
+            "a queued command must not stand in for the read failure, got: {message}"
+        );
     }
 
     #[tokio::test]

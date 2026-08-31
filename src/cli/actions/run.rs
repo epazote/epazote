@@ -4,6 +4,7 @@ use crate::cli::{
         client::build_client,
         execute_command, execute_fallbacks_tracking_stop, get_fallback_state,
         metrics::{ServiceMetrics, metrics_server},
+        record_check_failure,
         request::{build_http_request, handle_http_response},
         reset_fallback_state, should_continue_fallback,
         ssl::{SslCheckCache, check_ssl_certificate, new_ssl_check_cache},
@@ -15,6 +16,7 @@ use reqwest::Client;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::{
     sync::Mutex,
+    task::JoinSet,
     time::{Instant, MissedTickBehavior, interval},
 };
 use tracing::{debug, error, info, instrument, warn};
@@ -29,6 +31,24 @@ fn expected_command_status(service_details: &ServiceDetails) -> Result<i32> {
         .expect
         .expected_status_i32()
         .ok_or_else(|| anyhow!("Command checks require expect.status"))
+}
+
+async fn wait_for_shutdown_signal() -> Result<()> {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result?,
+            _ = terminate.recv() => (),
+        }
+    }
+
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await?;
+
+    Ok(())
 }
 
 /// Handle the create action
@@ -52,9 +72,13 @@ pub async fn handle(action: Action) -> Result<()> {
     let service_metrics = Arc::new(ServiceMetrics::new()?);
     let ssl_check_cache = new_ssl_check_cache();
 
-    let mut service_handles = Vec::new();
+    let mut service_handles = JoinSet::new();
 
     for (service_name, service) in &config.services {
+        // Publish the failure counter at 0 before the first check runs, so a
+        // service that never fails still exports a series.
+        service_metrics.init_service(service_name, service.expect.has_fallback_action());
+
         let service_counters: Arc<Mutex<HashMap<String, FallbackState>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
@@ -76,7 +100,7 @@ pub async fn handle(action: Action) -> Result<()> {
         let metrics = service_metrics.clone();
 
         // Spawn a task for each service
-        let handle = tokio::spawn(async move {
+        service_handles.spawn(async move {
             let every = service_details.every;
             run_service(
                 service_name,
@@ -89,29 +113,40 @@ pub async fn handle(action: Action) -> Result<()> {
             )
             .await;
         });
-
-        service_handles.push(handle);
     }
 
     // Spawn metrics server
-    let metrics_server_handle = tokio::spawn(metrics_server(service_metrics, bind, port));
+    let mut metrics_server_handle = tokio::spawn(metrics_server(service_metrics, bind, port));
 
     info!("Epazote 🌿 is running");
 
     // Wait for all tasks to complete
     tokio::select! {
-        (result, _, _) = futures::future::select_all(service_handles) => {
+        result = service_handles.join_next() => {
             return match result {
-                Ok(()) => Err(anyhow!("A service monitoring task completed unexpectedly")),
-                Err(e) => Err(anyhow!("A service monitoring task panicked: {e}")),
+                Some(Ok(())) => Err(anyhow!("A service monitoring task completed unexpectedly")),
+                Some(Err(e)) => Err(anyhow!("A service monitoring task panicked: {e}")),
+                None => Err(anyhow!("No service monitoring tasks are running")),
             };
         },
-        result = metrics_server_handle => {
+        result = &mut metrics_server_handle => {
             return match result {
                 Ok(Ok(())) => Err(anyhow!("Metrics server stopped unexpectedly")),
                 Ok(Err(error)) => Err(error).context("Metrics server error"),
                 Err(error) => Err(anyhow!("Metrics server task panicked: {error}")),
             };
+        },
+        signal = wait_for_shutdown_signal() => {
+            signal.context("Failed to listen for a shutdown signal")?;
+            info!("Shutdown signal received, stopping epazote");
+
+            service_handles.abort_all();
+            metrics_server_handle.abort();
+
+            while service_handles.join_next().await.is_some() {}
+            let _ = metrics_server_handle.await;
+
+            return Ok(());
         }
     }
 }
@@ -161,6 +196,19 @@ async fn run_service(
                 error!("Error scanning service '{}': {}", &service_name, e);
             }
         }
+
+        let state = get_fallback_state(&service_name, &counters)
+            .await
+            .unwrap_or_default();
+
+        let exhausted = service_details
+            .expect
+            .if_not
+            .as_ref()
+            .and_then(|action| action.stop)
+            .is_some_and(|stop| state.fallback_executions >= stop);
+
+        metrics.sync_fallback_exhausted(&service_name, exhausted);
     }
 }
 
@@ -195,6 +243,10 @@ async fn check_certificate_expiry(
 }
 
 /// `scan_service` performs the actual scan of the service
+///
+/// Long because it dispatches both service kinds inline; the HTTP and command
+/// arms share the timing, status and failure-accounting that surrounds them.
+#[allow(clippy::too_many_lines)]
 async fn scan_service(
     service_name: &str,
     service_details: &ServiceDetails,
@@ -207,9 +259,31 @@ async fn scan_service(
 
     match action {
         ServiceAction::Url(client) => {
-            let request_builder = build_http_request(client, service_details)?;
+            let request_builder = match build_http_request(client, service_details) {
+                Ok(builder) => builder,
+                Err(error) => {
+                    metrics
+                        .epazote_status
+                        .with_label_values(&[service_name])
+                        .set(0);
+                    let consecutive_failures = record_check_failure(service_name, &counters).await;
+                    metrics.record_check_state(service_name, consecutive_failures);
+                    return Err(error);
+                }
+            };
 
-            let request = request_builder.build()?;
+            let request = match request_builder.build() {
+                Ok(request) => request,
+                Err(error) => {
+                    metrics
+                        .epazote_status
+                        .with_label_values(&[service_name])
+                        .set(0);
+                    let consecutive_failures = record_check_failure(service_name, &counters).await;
+                    metrics.record_check_state(service_name, consecutive_failures);
+                    return Err(error.into());
+                }
+            };
 
             let url = request.url().to_string();
 
@@ -222,15 +296,21 @@ async fn scan_service(
                 Ok(response) => response,
                 Err(error) => {
                     // Mark the service down before the fallback runs, not
-                    // after. Fallback commands are serialized process-wide, so
-                    // this scan can sit queued behind another service's
-                    // restart; reporting the failure only once the fallback
-                    // returns would leave the gauge showing the last-known
-                    // state for as long as that queue takes.
+                    // after. A grouped fallback command can sit queued behind
+                    // another member's restart, and the command itself can take
+                    // the whole `if_not.timeout`; reporting the failure only
+                    // once the fallback returns would leave the gauge showing
+                    // the last-known state for as long as that takes.
                     metrics
                         .epazote_status
                         .with_label_values(&[service_name])
                         .set(0);
+
+                    // Count the failed check before deciding anything about
+                    // recovery: the streak belongs to the service, not to its
+                    // `if_not`.
+                    let consecutive_failures = record_check_failure(service_name, &counters).await;
+                    metrics.record_check_state(service_name, consecutive_failures);
 
                     if let Some(action) = &service_details.expect.if_not
                         && should_continue_fallback(service_name, &counters, action).await
@@ -250,8 +330,19 @@ async fn scan_service(
                             test: None,
                         };
 
-                        execute_fallbacks_tracking_stop(action, &context, service_name, &counters)
-                            .await?;
+                        // The fallback's own outcome is already logged and counted under
+                        // `epazote_fallback_executions_total`. It must not also become the
+                        // scan's error: `epazote_failures_total` counts scans that could not be
+                        // completed, and a fallback that was held back or could not reach its
+                        // endpoint is neither a scan error nor this scan's error to report.
+                        let _ = execute_fallbacks_tracking_stop(
+                            action,
+                            &context,
+                            service_name,
+                            &counters,
+                            metrics,
+                        )
+                        .await;
                     }
 
                     return Err(error.into());
@@ -283,7 +374,18 @@ async fn scan_service(
                 .with_label_values(&[service_name])
                 .observe(response_time);
 
-            let expected_status = expected_command_status(service_details)?;
+            let expected_status = match expected_command_status(service_details) {
+                Ok(status) => status,
+                Err(error) => {
+                    metrics
+                        .epazote_status
+                        .with_label_values(&[service_name])
+                        .set(0);
+                    let consecutive_failures = record_check_failure(service_name, &counters).await;
+                    metrics.record_check_state(service_name, consecutive_failures);
+                    return Err(error);
+                }
+            };
 
             // A command that could not run (spawn failure, timeout) never
             // produced an exit status, so it must not be compared against the
@@ -308,25 +410,43 @@ async fn scan_service(
 
             if is_match {
                 reset_fallback_state(service_name, &counters).await;
-            } else if let Some(action) = &service_details.expect.if_not
-                && should_continue_fallback(service_name, &counters, action).await
-            {
-                let state = get_fallback_state(service_name, &counters)
-                    .await
-                    .unwrap_or_default();
-                let context = FallbackContext {
-                    service_name,
-                    service_type: FallbackServiceType::Command,
-                    expected_status: Some(expected_status),
-                    actual_status,
-                    error,
-                    failure_count: state.consecutive_failures,
-                    threshold: action.threshold.unwrap_or(1),
-                    url: None,
-                    test: Some(command),
-                };
+                metrics.record_check_state(service_name, 0);
+            } else {
+                let consecutive_failures = record_check_failure(service_name, &counters).await;
+                metrics.record_check_state(service_name, consecutive_failures);
 
-                execute_fallbacks_tracking_stop(action, &context, service_name, &counters).await?;
+                if let Some(action) = &service_details.expect.if_not
+                    && should_continue_fallback(service_name, &counters, action).await
+                {
+                    let state = get_fallback_state(service_name, &counters)
+                        .await
+                        .unwrap_or_default();
+                    let context = FallbackContext {
+                        service_name,
+                        service_type: FallbackServiceType::Command,
+                        expected_status: Some(expected_status),
+                        actual_status,
+                        error,
+                        failure_count: state.consecutive_failures,
+                        threshold: action.threshold.unwrap_or(1),
+                        url: None,
+                        test: Some(command),
+                    };
+
+                    // The fallback's own outcome is already logged and counted under
+                    // `epazote_fallback_executions_total`. It must not also become the
+                    // scan's error: `epazote_failures_total` counts scans that could not be
+                    // completed, and a fallback that was held back or could not reach its
+                    // endpoint is neither a scan error nor this scan's error to report.
+                    let _ = execute_fallbacks_tracking_stop(
+                        action,
+                        &context,
+                        service_name,
+                        &counters,
+                        metrics,
+                    )
+                    .await;
+                }
             }
         }
     }
@@ -338,6 +458,8 @@ async fn scan_service(
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::cli::actions::metrics::{FALLBACK_FAILURE, FALLBACK_SKIPPED};
+    use crate::cli::actions::{FallbackSkipped, hold_group_lock, resetting_endpoint_url};
     use crate::cli::config::{Action, Expect, HttpMethod};
     use mockito::Server;
     use reqwest::StatusCode;
@@ -348,9 +470,8 @@ mod tests {
 
     /// An endpoint that accepts connections and never answers, so a fallback
     /// HTTP action stays in flight until its own timeout. Used to observe what
-    /// the metrics say *while* a fallback is still running - without taking
-    /// the process-wide fallback command lock, which would couple the test to
-    /// every other test that runs a fallback command.
+    /// the metrics say *while* a fallback is still running, without needing a
+    /// long-running command to hold the scan open.
     fn hanging_endpoint() -> String {
         let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind test listener");
         let addr = listener.local_addr().expect("Failed to get local addr");
@@ -366,13 +487,14 @@ mod tests {
     }
 
     /// A fallback that stays in flight long enough to observe the metrics
-    /// mid-flight, without serializing against other tests.
+    /// mid-flight.
     fn slow_http_fallback() -> Action {
         Action {
             cmd: None,
             http: Some(hanging_endpoint()),
             stop: None,
             threshold: Some(1),
+            group: None,
             timeout: Some(Duration::from_millis(1500)),
         }
     }
@@ -1032,6 +1154,174 @@ services:
         );
     }
 
+    /// A command check that fails its expectation, with `if_not` attached.
+    fn failing_command_service(action: Action) -> ServiceDetails {
+        let mut service_details = mock_service_details(Some("false"), 0, None);
+        service_details.expect.if_not = Some(action);
+        service_details
+    }
+
+    /// Regression: the fallback's own failure must not be reported as a scan
+    /// error.
+    ///
+    /// `epazote_failures_total` counts scans that could not be completed - a
+    /// request that could not be made, or a body that could not be read. This
+    /// check completes and merely fails its expectation, which is not that. The
+    /// fallback's failure was `?`-propagated out of `scan_service`, so the scan
+    /// loop counted it anyway, and a service whose only problem was an
+    /// unreachable webhook read as a service epazote could not reach.
+    ///
+    /// Deliberately ungrouped: the defect needs no contention, only a fallback
+    /// action that fails.
+    ///
+    /// The `Ok` is the assertion that matters here. `epazote_failures_total` is
+    /// incremented by `run_service`, never by `scan_service`
+    /// (`test_scan_service_leaves_the_failure_counter_to_the_run_loop`), so
+    /// asserting it at this level could not fail and would only look like
+    /// coverage. The counter itself is locked end to end against the running
+    /// binary in `tests/integration.rs`.
+    #[tokio::test]
+    async fn test_a_failing_fallback_does_not_count_as_a_scan_error() {
+        let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
+        let ssl_cache = new_ssl_check_cache();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let service_details = failing_command_service(Action {
+            // An alert endpoint that resets the connection, so the fallback
+            // reports failure without anything else going wrong.
+            http: Some(resetting_endpoint_url("http", "/hook")),
+            threshold: Some(1),
+            timeout: Some(Duration::from_secs(2)),
+            ..Default::default()
+        });
+
+        scan_service(
+            "broken-alert",
+            &service_details,
+            &mock_action("false"),
+            &metrics,
+            Arc::clone(&counters),
+            &ssl_cache,
+        )
+        .await
+        .expect("a fallback that failed is not a scan error");
+
+        assert_eq!(
+            metrics
+                .epazote_fallback_executions_total
+                .with_label_values(&["broken-alert", FALLBACK_FAILURE])
+                .get(),
+            1,
+            "the failure belongs to the fallback metric, and must still be recorded there"
+        );
+    }
+
+    /// Regression: a command held back by its `if_not.group` must not be
+    /// counted as a scan error either.
+    ///
+    /// This is the shape the group work made routine. Contention is a latency
+    /// problem, and counting it here made it indistinguishable from a service
+    /// epazote could not reach - while the same attempt is already, and
+    /// correctly, published as `outcome="skipped"`.
+    ///
+    /// As above, the `Ok` carries the regression; the counter is locked against
+    /// the running binary in `tests/integration.rs`.
+    #[tokio::test]
+    async fn test_a_queued_fallback_command_does_not_count_as_a_scan_error() {
+        let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
+        let ssl_cache = new_ssl_check_cache();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        // Stand in for another member of the group whose command is still
+        // running, so this one can only be skipped.
+        let guard = hold_group_lock("run-queued-not-a-scan-error").await;
+
+        let service_details = failing_command_service(Action {
+            cmd: Some("true".to_string()),
+            group: Some("run-queued-not-a-scan-error".to_string()),
+            threshold: Some(1),
+            // Short, so the queued command gives up while the guard is held.
+            timeout: Some(Duration::from_millis(200)),
+            ..Default::default()
+        });
+
+        scan_service(
+            "queued-command",
+            &service_details,
+            &mock_action("false"),
+            &metrics,
+            Arc::clone(&counters),
+            &ssl_cache,
+        )
+        .await
+        .expect("a command that never got its group lock is not a scan error");
+
+        drop(guard);
+
+        assert_eq!(
+            metrics
+                .epazote_fallback_executions_total
+                .with_label_values(&["queued-command", FALLBACK_SKIPPED])
+                .get(),
+            1,
+            "the skip must still be visible where contention is meant to be read"
+        );
+    }
+
+    /// Regression: when the scan really did fail, it must report its own error.
+    ///
+    /// The request error was built and waiting on the next line, but the
+    /// fallback ran first and its error was `?`-propagated, so a service whose
+    /// port was closed was logged only as `fallback command skipped` - naming
+    /// the recovery instead of the outage, with nothing left saying why the
+    /// service was down.
+    #[tokio::test]
+    async fn test_the_scan_reports_its_own_error_not_the_fallbacks() {
+        let metrics = Arc::new(ServiceMetrics::new().expect("Failed to create metrics"));
+        let ssl_cache = new_ssl_check_cache();
+        let counters: Arc<Mutex<HashMap<String, FallbackState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let guard = hold_group_lock("run-scan-error-wins").await;
+
+        let url = resetting_endpoint_url("http", "/health");
+        let mut service_details = mock_service_details(None, 200, None);
+        service_details.url = Some(url.clone());
+        service_details.timeout = Duration::from_millis(200);
+        service_details.expect.if_not = Some(Action {
+            cmd: Some("true".to_string()),
+            group: Some("run-scan-error-wins".to_string()),
+            threshold: Some(1),
+            timeout: Some(Duration::from_millis(200)),
+            ..Default::default()
+        });
+
+        let error = scan_service(
+            "unreachable-and-queued",
+            &service_details,
+            &ServiceAction::Url(Client::new()),
+            &metrics,
+            Arc::clone(&counters),
+            &ssl_cache,
+        )
+        .await
+        .expect_err("a service whose port is closed must still be a scan error");
+
+        drop(guard);
+
+        assert!(
+            error.downcast_ref::<FallbackSkipped>().is_none(),
+            "the queued fallback must not stand in for the reason the scan failed, got: {error}"
+        );
+
+        assert!(
+            format!("{error:#}").contains(&url),
+            "the scan must name the request it could not make, got: {error:#}"
+        );
+    }
+
     /// Regression: a failed SSL certificate check must not abort the scan
     /// before the HTTP request is made. Previously the check was `?`-propagated,
     /// so an unreachable HTTPS service returned early and its configured
@@ -1041,13 +1331,8 @@ services:
         let (_tempdir, script_path, output_path) =
             create_env_capture_script(&["EPAZOTE_SERVICE_NAME", "EPAZOTE_ERROR"]);
 
-        // A closed port, so both the SSL check and the HTTP request fail.
-        let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind test listener");
-        let url = format!(
-            "https://{}/health",
-            listener.local_addr().expect("Failed to get local addr")
-        );
-        drop(listener);
+        // A reset endpoint, so both the SSL check and HTTP request fail.
+        let url = resetting_endpoint_url("https", "/health");
 
         let service_details = ServiceDetails {
             every: Duration::from_secs(1),
@@ -1062,6 +1347,7 @@ services:
                     http: None,
                     stop: None,
                     threshold: Some(1),
+                    group: None,
                     timeout: None,
                 }),
             },
@@ -1148,17 +1434,12 @@ services:
     }
 
     /// Regression: a failed probe must be visible in Prometheus before the
-    /// fallback runs. Fallback commands are serialized process-wide, so a scan
-    /// can sit queued behind another service's restart - reporting the failure
-    /// only after the fallback returns would leave the gauge stale for minutes.
+    /// fallback runs. A grouped fallback command can sit queued behind another
+    /// group member's restart - reporting the failure only after the fallback
+    /// returns would leave the gauge stale for minutes.
     #[tokio::test]
     async fn test_scan_service_marks_service_down_before_running_fallback() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind test listener");
-        let url = format!(
-            "http://{}/health",
-            listener.local_addr().expect("Failed to get local addr")
-        );
-        drop(listener);
+        let url = resetting_endpoint_url("http", "/health");
 
         let service_details = ServiceDetails {
             every: Duration::from_secs(1),
@@ -1202,23 +1483,41 @@ services:
             &ssl_cache,
         );
 
-        let status_during_fallback = async {
+        let metrics_during_fallback = async {
             tokio::time::sleep(Duration::from_millis(300)).await;
-            metrics
-                .epazote_status
-                .with_label_values(&["down-service"])
-                .get()
+            (
+                metrics
+                    .epazote_status
+                    .with_label_values(&["down-service"])
+                    .get(),
+                metrics
+                    .epazote_consecutive_failures
+                    .with_label_values(&["down-service"])
+                    .get(),
+                metrics
+                    .epazote_last_check_timestamp_seconds
+                    .with_label_values(&["down-service"])
+                    .get(),
+            )
         };
 
-        let (result, status_during_fallback) = tokio::join!(scan, status_during_fallback);
+        let (result, metrics_during_fallback) = tokio::join!(scan, metrics_during_fallback);
 
         assert!(
             result.is_err(),
             "Request error should still return an error"
         );
         assert_eq!(
-            status_during_fallback, 0,
-            "the service must report DOWN while its fallback is still running, not only after"
+            metrics_during_fallback.0, 0,
+            "the service must report DOWN while its fallback is still running"
+        );
+        assert_eq!(
+            metrics_during_fallback.1, 1,
+            "the failure streak must advance before its fallback finishes"
+        );
+        assert!(
+            metrics_during_fallback.2 > 0,
+            "the completed check must be timestamped before its fallback finishes"
         );
     }
 
@@ -1252,23 +1551,41 @@ services:
             &ssl_cache,
         );
 
-        let status_during_fallback = async {
+        let metrics_during_fallback = async {
             tokio::time::sleep(Duration::from_millis(300)).await;
-            metrics
-                .epazote_status
-                .with_label_values(&["cmd-service"])
-                .get()
+            (
+                metrics
+                    .epazote_status
+                    .with_label_values(&["cmd-service"])
+                    .get(),
+                metrics
+                    .epazote_consecutive_failures
+                    .with_label_values(&["cmd-service"])
+                    .get(),
+                metrics
+                    .epazote_last_check_timestamp_seconds
+                    .with_label_values(&["cmd-service"])
+                    .get(),
+            )
         };
 
-        let (result, status_during_fallback) = tokio::join!(scan, status_during_fallback);
+        let (result, metrics_during_fallback) = tokio::join!(scan, metrics_during_fallback);
 
         assert!(
-            result.is_err(),
-            "the unanswered fallback endpoint is reported as a scan error"
+            result.is_ok(),
+            "the check completed and merely failed its expectation, so the fallback's own              failure is not a scan error"
         );
         assert_eq!(
-            status_during_fallback, 0,
-            "the service must report DOWN while its fallback is still running, not only after"
+            metrics_during_fallback.0, 0,
+            "the service must report DOWN while its fallback is still running"
+        );
+        assert_eq!(
+            metrics_during_fallback.1, 1,
+            "the failure streak must advance before its fallback finishes"
+        );
+        assert!(
+            metrics_during_fallback.2 > 0,
+            "the completed check must be timestamped before its fallback finishes"
         );
     }
 
@@ -1278,12 +1595,7 @@ services:
     /// double increment.
     #[tokio::test]
     async fn test_scan_service_leaves_the_failure_counter_to_the_run_loop() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind test listener");
-        let url = format!(
-            "http://{}/health",
-            listener.local_addr().expect("Failed to get local addr")
-        );
-        drop(listener);
+        let url = resetting_endpoint_url("http", "/health");
 
         let mut service_details = mock_service_details(None, 200, None);
         service_details.url = Some(url);
@@ -1328,12 +1640,7 @@ services:
             "EPAZOTE_URL",
         ]);
 
-        let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind test listener");
-        let url = format!(
-            "http://{}/health",
-            listener.local_addr().expect("Failed to get local addr")
-        );
-        drop(listener);
+        let url = resetting_endpoint_url("http", "/health");
 
         let service_details = ServiceDetails {
             every: Duration::from_secs(1),
@@ -1348,6 +1655,7 @@ services:
                     http: None,
                     stop: None,
                     threshold: Some(1),
+                    group: None,
                     timeout: None,
                 }),
             },

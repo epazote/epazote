@@ -1,3 +1,11 @@
 /target/
 **/*.rs.bk
 .codex
+.agents
+skills-lock.json
+
+# Scratch directories the tests create next to the manifest. TempDir removes
+# them on drop, so these only survive a run that was interrupted before the
+# drop could happen - at which point they must not be committable. The trailing
+# slash matches directories only, leaving epazote-grafana-dashboard.json alone.
+/epazote-*/

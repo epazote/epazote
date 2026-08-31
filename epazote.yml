@@ -1,4 +1,12 @@
 ---
+# Durations ('every', 'timeout', 'if_not.timeout') are a whole number plus a
+# required unit: 's' seconds, 'm' minutes, 'h' hours, 'd' days.
+#
+# Fractions are rejected rather than rounded, so use seconds for anything
+# finer than the next unit up: '90s', not '1.5m'. There is nothing below a
+# second - '500ms' is an error and '1s' is the shortest duration accepted.
+# Zero is refused too: '0s' is not "as fast as possible", it is an interval
+# that cannot be scheduled.
 services:
   myip:
     url: https://www.myip.country
@@ -33,4 +41,31 @@ services:
       if_not:
         # recovery commands get their own budget (default 300s)
         timeout: 15m
-        cmd:
+        cmd: echo "my-command failed, recovering"
+
+  # services whose recoveries conflict - here both restarts hit the same
+  # database host - declare a group. Members of a group run one at a time;
+  # everything else runs concurrently. The name is any non-empty label you
+  # choose; it is only compared against other services' groups.
+  #
+  # Every key under 'if_not' must carry a value if it is written at all: a
+  # bare 'cmd:' or 'group:' is refused rather than read as absent, so an
+  # unfinished edit cannot look like configured recovery. Leave a key out to
+  # not set it - omitting 'group' is how a command runs ungrouped.
+  db-primary:
+    url: http://127.0.0.1:3306
+    every: 30s
+    expect:
+      status: 200
+      if_not:
+        group: mysql
+        cmd: systemctl restart mariadb
+
+  db-replica:
+    url: http://127.0.0.1:3307
+    every: 30s
+    expect:
+      status: 200
+      if_not:
+        group: mysql
+        cmd: systemctl restart mariadb-replica

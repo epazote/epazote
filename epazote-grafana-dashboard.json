@@ -11,22 +11,16 @@
   ],
   "__requires": [
     {
+      "type": "datasource",
+      "id": "prometheus",
+      "name": "Prometheus",
+      "version": "1.0.0"
+    },
+    {
       "type": "grafana",
       "id": "grafana",
       "name": "Grafana",
       "version": "11.0.0"
-    },
-    {
-      "type": "panel",
-      "id": "stat",
-      "name": "Stat",
-      "version": ""
-    },
-    {
-      "type": "panel",
-      "id": "timeseries",
-      "name": "Time series",
-      "version": ""
     },
     {
       "type": "panel",
@@ -35,10 +29,22 @@
       "version": ""
     },
     {
-      "type": "datasource",
-      "id": "prometheus",
-      "name": "Prometheus",
-      "version": "1.0.0"
+      "type": "panel",
+      "id": "state-timeline",
+      "name": "State timeline",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "table",
+      "name": "Table",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "timeseries",
+      "name": "Time series",
+      "version": ""
     }
   ],
   "annotations": {
@@ -69,22 +75,28 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
+      "description": "Service health timeline showing check status over time.\n\n**GREEN** = Service UP\n**RED** = Service DOWN\n\n**LEGEND SHOWS:**\n- Service name and the node (IP) that reported it\n\n**WHAT TO LOOK FOR:**\n- Red bands = Service down (check epazote logs immediately)\n- Gaps = epazote not running / target not scraped\n- Flapping (red/green/red) = Intermittent issues\n\n**NOTE:** In multi-node setups each node runs its own epazote and reports the same service names. Every node gets its own labelled row here, so the same service name appearing under different IPs is expected - narrow down with the 'Node (IP)' variable at the top.",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "thresholds"
+          },
+          "custom": {
+            "fillOpacity": 70,
+            "lineWidth": 0,
+            "spanNulls": false
           },
           "mappings": [
             {
               "options": {
                 "0": {
                   "color": "red",
-                  "index": 1,
+                  "index": 0,
                   "text": "DOWN"
                 },
                 "1": {
                   "color": "green",
-                  "index": 0,
+                  "index": 1,
                   "text": "UP"
                 }
               },
@@ -109,22 +121,25 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 24,
         "x": 0,
         "y": 0
       },
       "id": 1,
       "options": {
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
+        "alignValue": "left",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
         },
-        "showThresholdLabels": false,
-        "showThresholdMarkers": true
+        "mergeValues": true,
+        "rowHeight": 0.9,
+        "showValue": "auto",
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
       },
       "pluginVersion": "11.0.0",
       "targets": [
@@ -134,22 +149,121 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "epazote_status{job=~\"$job\"}",
+          "expr": "epazote_status{job=~\"$job\", ip=~\"$ip\"}",
           "format": "time_series",
-          "instant": true,
-          "legendFormat": "{{service_name}}",
-          "range": false,
+          "instant": false,
+          "legendFormat": "{{service_name}} ({{ip}})",
+          "range": true,
           "refId": "A"
         }
       ],
       "title": "Service Status",
-      "type": "stat"
+      "type": "state-timeline"
     },
     {
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
+      "description": "Whether epazote can still run a configured fallback action.\n\n**GREEN (FALLBACK ARMED)** = an `if_not.cmd` and/or `if_not.http` action is configured and the `stop` budget still has room. A failed check can trigger it once `threshold` is reached.\n**RED (FALLBACK EXHAUSTED)** = the `stop` budget is spent. epazote will not run the configured fallback actions again until a successful check resets the budget.\n**YELLOW (NO FALLBACK)** = the service declares no `if_not`. A failure is reported and no fallback action runs.\n\n**WHY THIS PANEL EXISTS:**\n`epazote_status` reports 0 whether a failing service still has a fallback available, has exhausted its budget, or has no fallback. `epazote_fallback_exhausted` alone cannot separate the latter two because it is seeded to 0 for every service. Read this panel alongside 'Service Status'.\n\n**WHAT TO LOOK FOR:**\n- Red band while 'Service Status' is red = no further fallback actions will run during this outage; manual intervention may be required\n- Yellow band while 'Service Status' is red = the service is down and no fallback action was configured\n- An `if_not.http` action may only alert or trigger an external workflow; this panel shows action availability, not proof that the service can repair itself\n\nThe expression makes `epazote_fallback_configured = 0` map to NO FALLBACK, while a configured action maps to ARMED or EXHAUSTED according to its `stop` budget.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "fillOpacity": 70,
+            "lineWidth": 0,
+            "spanNulls": false
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "green",
+                  "index": 0,
+                  "text": "FALLBACK ARMED"
+                },
+                "1": {
+                  "color": "red",
+                  "index": 1,
+                  "text": "FALLBACK EXHAUSTED"
+                },
+                "2": {
+                  "color": "yellow",
+                  "index": 2,
+                  "text": "NO FALLBACK"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              },
+              {
+                "color": "yellow",
+                "value": 2
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
+      "id": 5,
+      "options": {
+        "alignValue": "left",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "mergeValues": true,
+        "rowHeight": 0.9,
+        "showValue": "auto",
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "epazote_fallback_exhausted{job=~\"$job\", ip=~\"$ip\"} * epazote_fallback_configured{job=~\"$job\", ip=~\"$ip\"} + 2 * (1 - epazote_fallback_configured{job=~\"$job\", ip=~\"$ip\"})",
+          "legendFormat": "{{service_name}} ({{ip}})",
+          "range": true,
+          "refId": "A",
+          "format": "time_series",
+          "instant": false
+        }
+      ],
+      "title": "Fallback State (armed / exhausted / none)",
+      "type": "state-timeline"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Current run of consecutive failed checks per service, reset to 0 by the first success.\n\n**WHAT TO LOOK FOR:**\n- A rising line = the service is failing repeatedly right now\n- A value at or above the service's `if_not.threshold` = its fallback is firing on every check\n- A sawtooth = flapping: recovering and failing again\n\n**WHY IT IS USEFUL:** this makes a service alertable *before* it crosses its threshold, rather than only after the fallback has already run. It is reported for every failed check, including services with no `if_not` block configured.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -194,23 +308,26 @@
                 "value": null
               }
             ]
-          },
-          "unit": "s"
+          }
         },
         "overrides": []
       },
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 0
+        "x": 0,
+        "y": 16
       },
-      "id": 2,
+      "id": 6,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "right",
           "showLegend": true
         },
         "tooltip": {
@@ -225,13 +342,106 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, service_name) (rate(epazote_response_time_seconds_bucket{job=~\"$job\"}[5m])))",
-          "legendFormat": "{{service_name}} p95",
+          "expr": "epazote_consecutive_failures{job=~\"$job\", ip=~\"$ip\"}",
+          "legendFormat": "{{service_name}} ({{ip}})",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Response Time (p95)",
+      "title": "Consecutive Failures",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Fallback attempts in the last hour, split by outcome.\n\n**OUTCOMES:**\n- `success` = every action that ran reported success, and no grouped command was held back\n- `failure` = an action reported failure or could not be started. This takes precedence over a simultaneous command skip. Check the command logs and/or HTTP endpoint\n- `skipped` = a grouped command never got its lock, and nothing that did run failed. An `if_not.http` action may still have succeeded alongside it; the attempt is refunded to `stop` only when no HTTP action ran\n\n**WHAT TO LOOK FOR:**\n- Sustained `failure` = a configured fallback action is not working\n- Sustained `skipped` = a group is over-subscribed; consider splitting it or raising `if_not.timeout`\n- Repeated `success` means the action reports success repeatedly; it does not by itself prove that the service was repaired",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "increase(epazote_fallback_executions_total{job=~\"$job\", ip=~\"$ip\"}[1h])",
+          "legendFormat": "{{service_name}} {{outcome}} ({{ip}})",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Fallback Executions (last 1h, by outcome)",
       "type": "timeseries"
     },
     {
@@ -289,16 +499,20 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 24,
         "x": 0,
-        "y": 8
+        "y": 24
       },
       "id": 3,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "right",
           "showLegend": true
         },
         "tooltip": {
@@ -313,13 +527,107 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "increase(epazote_failures_total{job=~\"$job\"}[1h])",
-          "legendFormat": "{{service_name}}",
+          "expr": "increase(epazote_failures_total{job=~\"$job\", ip=~\"$ip\"}[1h])",
+          "legendFormat": "{{service_name}} ({{ip}})",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Failures (last 1h)",
+      "title": "Scan Errors (last 1h)",
+      "type": "timeseries",
+      "description": "Checks that could not be completed at all - the request could not be made or its response could not be read. A service that answers but fails its expectations (a 500, or a body that does not match) is NOT counted here: it moves Service Status to DOWN and raises Consecutive Failures instead. Read this panel as \"epazote could not reach or parse the service\", not as \"the service is failing\"."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, service_name, ip) (rate(epazote_response_time_seconds_bucket{job=~\"$job\", ip=~\"$ip\"}[5m])))",
+          "legendFormat": "{{service_name}} ({{ip}}) p95",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Response Time (p95)",
       "type": "timeseries"
     },
     {
@@ -357,9 +665,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 8
+        "w": 24,
+        "x": 0,
+        "y": 40
       },
       "id": 4,
       "options": {
@@ -381,14 +689,188 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "epazote_ssl_cert_expiry_seconds{job=~\"$job\"}",
-          "legendFormat": "{{service_name}}",
+          "expr": "epazote_ssl_cert_expiry_seconds{job=~\"$job\", ip=~\"$ip\"}",
+          "legendFormat": "{{service_name}} ({{ip}})",
           "range": true,
           "refId": "A"
         }
       ],
       "title": "SSL Cert Expiration",
       "type": "gauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Age of the most recent completed check per service.\n\n**WHAT TO LOOK FOR:**\n- A value growing without bound = that service's monitoring task has stopped ticking. `epazote_status` keeps publishing its last value indefinitely, so a stalled check looks identical to a healthy one there\n- A steady sawtooth peaking near the service's `every` interval = normal\n\n**NOTE:** unlike the other fallback metrics this one is not seeded at start-up, because a zero would claim a check happened at the Unix epoch and trip any staleness alert immediately. A service therefore has no series here until its first check completes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 48
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "time() - epazote_last_check_timestamp_seconds{job=~\"$job\", ip=~\"$ip\"}",
+          "legendFormat": "{{service_name}} ({{ip}})",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Time Since Last Check",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "The epazote version and git revision each node is running.\n\n**WHAT TO LOOK FOR:**\n- More than one `version` across nodes = a partially rolled-out upgrade, which is the usual explanation for one node behaving differently from the rest",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 48
+      },
+      "id": 9,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "epazote_build_info{job=~\"$job\", ip=~\"$ip\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "title": "Build Info",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "__name__": true
+            },
+            "indexByName": {},
+            "renameByName": {}
+          }
+        }
+      ],
+      "type": "table"
     }
   ],
   "refresh": "10s",
@@ -423,6 +905,38 @@
         "skipUrlSync": false,
         "sort": 1,
         "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values(epazote_status{job=~\"$job\"}, ip)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Node (IP)",
+        "multi": true,
+        "name": "ip",
+        "options": [],
+        "query": {
+          "query": "label_values(epazote_status{job=~\"$job\"}, ip)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
       }
     ]
   },
@@ -434,5 +948,5 @@
   "timezone": "",
   "title": "Epazote Service Monitoring",
   "uid": "epazote-monitoring",
-  "version": 3
+  "version": 12
 }
