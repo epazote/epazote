@@ -1,6 +1,18 @@
 Changelog
 =========
 
+## 5.0.0 (2026-09-19)
+
+### Breaking changes
+
+- **Published releases and other default builds no longer contain OpenTelemetry support**: OpenTelemetry is now behind the default-off `telemetry` Cargo feature. Setting `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, or another `OTEL_*` variable cannot enable export in a default binary because the SDK and OTLP exporter are not compiled into it. Deployments that currently rely on OTLP export must build or install with `--features telemetry`; they must also continue setting an endpoint at runtime, since the feature provides the capability but does not enable export by itself. Local pretty and JSON logs remain available in every build.
+
+- **OpenTelemetry output is now exported as OTLP logs rather than traces**: Epazote's `tracing` events are bridged to the OpenTelemetry Logs signal. Backends and dashboards consuming the former process-lifetime trace need to ingest OTLP logs instead.
+
+### Changed
+
+- **The optional OpenTelemetry stack was upgraded to 0.33**: telemetry builds use the official `opentelemetry-appender-tracing` bridge, accept either the general or logs-specific OTLP endpoint, and flush the logger provider during graceful shutdown. The removed generic `tls` feature was replaced with `tls-ring`.
+
 ## 4.2.0 (2026-08-31)
 
 ### Changed

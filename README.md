@@ -9,6 +9,31 @@ First you need to install **Epazote**:
 
     cargo install epazote
 
+OpenTelemetry support is excluded from default builds, including the published
+release binaries. `OTEL_*` environment variables cannot enable telemetry in
+those binaries because the SDK and exporter are not compiled into them.
+
+To include OTLP log export, build or install Epazote with the `telemetry`
+feature:
+
+```sh
+cargo install epazote --features telemetry
+```
+
+The feature makes telemetry available at compile time. Export still remains
+off until an endpoint is configured at runtime:
+
+```sh
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317
+# Or use the signal-specific variable:
+# export OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://127.0.0.1:4317
+```
+
+In short, OTLP export requires both `--features telemetry` when compiling and
+an OTLP endpoint when running. `OTEL_SDK_DISABLED=true` disables export in a
+telemetry-enabled binary without requiring another rebuild. Local pretty and
+JSON logging are always available, including in default builds.
+
 Or download the latest release from the [releases](https://github.com/epazote/epazote/releases)
 
 

@@ -1,24 +1,27 @@
 use anyhow::Result;
-use opentelemetry::{KeyValue, global, trace::TracerProvider as _};
+#[cfg(feature = "telemetry")]
+use opentelemetry::KeyValue;
+#[cfg(feature = "telemetry")]
+use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
+#[cfg(feature = "telemetry")]
 use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::{
-    Resource,
-    trace::{SdkTracerProvider, Tracer},
-};
-use std::{
-    env,
-    sync::atomic::{AtomicBool, Ordering},
-    time::Duration,
-};
+#[cfg(feature = "telemetry")]
+use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider};
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "telemetry")]
+use std::{env, sync::OnceLock, time::Duration};
 use tracing::Level;
 use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 
 static PRETTY_LOGS_ENABLED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "telemetry")]
+static LOGGER_PROVIDER: OnceLock<SdkLoggerProvider> = OnceLock::new();
 
-fn init_tracer() -> Result<Tracer> {
-    let tracer_provider = SdkTracerProvider::builder()
+#[cfg(feature = "telemetry")]
+fn init_logger() -> Result<SdkLoggerProvider> {
+    let logger_provider = SdkLoggerProvider::builder()
         .with_batch_exporter(
-            opentelemetry_otlp::SpanExporter::builder()
+            opentelemetry_otlp::LogExporter::builder()
                 .with_tonic()
                 .with_timeout(Duration::from_secs(3))
                 .build()?,
@@ -33,11 +36,12 @@ fn init_tracer() -> Result<Tracer> {
         )
         .build();
 
-    global::set_tracer_provider(tracer_provider.clone());
+    let _ = LOGGER_PROVIDER.set(logger_provider.clone());
 
-    Ok(tracer_provider.tracer(env!("CARGO_PKG_NAME")))
+    Ok(logger_provider)
 }
 
+#[cfg(feature = "telemetry")]
 fn otlp_enabled() -> bool {
     if matches!(
         env::var("OTEL_SDK_DISABLED"),
@@ -47,7 +51,7 @@ fn otlp_enabled() -> bool {
     }
 
     env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT").is_some()
-        || env::var_os("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT").is_some()
+        || env::var_os("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT").is_some()
 }
 
 pub(crate) fn pretty_logs_enabled() -> bool {
@@ -75,9 +79,15 @@ fn build_filter(verbosity_level: Level) -> Result<EnvFilter> {
         .add_directive("epazote::cli::config=warn".parse()?))
 }
 
-/// Start the telemetry layer
+/// Start local logging and, when compiled and configured, OTLP log export.
+///
+/// OTLP export requires the `telemetry` Cargo feature and either
+/// `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`.
+/// Without the feature, these environment variables have no effect.
+///
 /// # Errors
-/// Will return an error if the telemetry layer fails to start
+///
+/// Will return an error if local logging or the optional telemetry layer fails to start.
 pub fn init(verbosity_level: Option<Level>, json_logs: bool) -> Result<()> {
     let verbosity_level = verbosity_level.unwrap_or(Level::ERROR);
     PRETTY_LOGS_ENABLED.store(!json_logs, Ordering::Relaxed);
@@ -95,12 +105,13 @@ pub fn init(verbosity_level: Option<Level>, json_logs: bool) -> Result<()> {
 
         let subscriber = Registry::default().with(fmt_layer).with(filter);
 
+        #[cfg(feature = "telemetry")]
         if otlp_enabled() {
-            let tracer = init_tracer()?;
-            let otel_tracer_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+            let logger_provider = init_logger()?;
+            let otel_log_layer = OpenTelemetryTracingBridge::new(&logger_provider);
 
             return Ok(tracing::subscriber::set_global_default(
-                subscriber.with(otel_tracer_layer),
+                subscriber.with(otel_log_layer),
             )?);
         }
 
@@ -117,22 +128,52 @@ pub fn init(verbosity_level: Option<Level>, json_logs: bool) -> Result<()> {
 
     let subscriber = Registry::default().with(fmt_layer).with(filter);
 
+    #[cfg(feature = "telemetry")]
     if otlp_enabled() {
-        let tracer = init_tracer()?;
-        let otel_tracer_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+        let logger_provider = init_logger()?;
+        let otel_log_layer = OpenTelemetryTracingBridge::new(&logger_provider);
 
         return Ok(tracing::subscriber::set_global_default(
-            subscriber.with(otel_tracer_layer),
+            subscriber.with(otel_log_layer),
         )?);
     }
 
     Ok(tracing::subscriber::set_global_default(subscriber)?)
 }
 
+/// Flush pending OTLP logs and stop the logger provider.
+///
+/// This is a no-op when the binary was built without the `telemetry` feature
+/// or no OTLP endpoint was configured at startup.
+///
+/// # Errors
+///
+/// Returns an error if the logger provider cannot shut down cleanly.
+#[cfg(feature = "telemetry")]
+pub fn shutdown() -> Result<()> {
+    if let Some(provider) = LOGGER_PROVIDER.get() {
+        provider.shutdown()?;
+    }
+
+    Ok(())
+}
+
+/// Return immediately when OTLP telemetry was not compiled in.
+///
+/// # Errors
+///
+/// This implementation cannot fail.
+#[cfg(not(feature = "telemetry"))]
+pub const fn shutdown() -> Result<()> {
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::panic)]
 mod tests {
-    use super::{build_filter, otlp_enabled};
+    use super::build_filter;
+    #[cfg(feature = "telemetry")]
+    use super::otlp_enabled;
     use std::sync::{Arc, Mutex};
     use tracing::{Level, subscriber::with_default};
     use tracing_subscriber::{Layer, layer::Context, layer::SubscriberExt, registry};
@@ -200,6 +241,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "telemetry")]
     #[test]
     fn test_otlp_disabled_by_default() {
         let _lock = match ENV_LOCK.lock() {
@@ -209,12 +251,13 @@ mod tests {
         unsafe {
             std::env::remove_var("OTEL_SDK_DISABLED");
             std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
-            std::env::remove_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
+            std::env::remove_var("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT");
         }
 
         assert!(!otlp_enabled());
     }
 
+    #[cfg(feature = "telemetry")]
     #[test]
     fn test_otlp_enabled_with_endpoint() {
         let _lock = match ENV_LOCK.lock() {
@@ -233,6 +276,27 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "telemetry")]
+    #[test]
+    fn test_otlp_enabled_with_logs_endpoint() {
+        let _lock = match ENV_LOCK.lock() {
+            Ok(lock) => lock,
+            Err(error) => panic!("failed to lock env: {error}"),
+        };
+        unsafe {
+            std::env::remove_var("OTEL_SDK_DISABLED");
+            std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+            std::env::set_var("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "http://127.0.0.1:4317");
+        }
+
+        assert!(otlp_enabled());
+
+        unsafe {
+            std::env::remove_var("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT");
+        }
+    }
+
+    #[cfg(feature = "telemetry")]
     #[test]
     fn test_otlp_disabled_explicitly() {
         let _lock = match ENV_LOCK.lock() {

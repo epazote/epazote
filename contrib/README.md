@@ -20,7 +20,7 @@ Notes:
 
 * the package installs the binary at `/usr/bin/epazote`
 * the systemd unit expects the active config at `/etc/epazote/epazote.yml`
-* the package installs `/etc/epazote/epazote.env` for config, port, verbosity, and OTEL overrides
+* the package installs `/etc/epazote/epazote.env` for config, port, verbosity, and optional OTLP log-export overrides; OTLP support requires building with `--features telemetry`
 * the service unit runs as `root` by default so fallback commands can restart local services when needed
 * the post-install script enables the service and only tries to start it when `/etc/epazote/epazote.yml` exists
 * after the service is enabled, systemd will keep retrying startup until the config exists and `epazote` can start successfully
