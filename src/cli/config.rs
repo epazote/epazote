@@ -1733,7 +1733,10 @@ services:
     fn test_single_service_never_conflicts_with_itself() {
         let services = services_from(vec![("a", service_with_fallback("/opt/restart.sh", None))]);
 
-        assert!(conflicting_fallback_commands(&services).is_empty());
+        assert_eq!(
+            conflicting_fallback_commands(&services),
+            [] as [FallbackConflict; 0]
+        );
     }
 
     /// An identical command is already reported by Rule A; Rule B must not
