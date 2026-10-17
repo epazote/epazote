@@ -358,23 +358,38 @@ impl<'de> Deserialize<'de> for BodyType {
     where
         D: Deserializer<'de>,
     {
-        let value = serde_json::Value::deserialize(deserializer)?;
+        // Every other shape is refused here. It used to go to
+        // `serde_json::from_value::<Self>`, which called this function again
+        // and recursed until the stack overflowed.
+        let found = match serde_json::Value::deserialize(deserializer)? {
+            serde_json::Value::String(text) => return Ok(Self::Text(text)),
+            serde_json::Value::Object(mut map) => {
+                if let Some(json) = map.remove("json") {
+                    return Ok(Self::Json(json));
+                }
 
-        if let Some(json_value) = value.get("json") {
-            return Ok(Self::Json(json_value.clone()));
-        }
+                if let Some(form) = map.remove("form") {
+                    let form_map = serde_json::from_value::<HashMap<String, String>>(form)
+                        .map_err(serde::de::Error::custom)?;
+                    return Ok(Self::Form(form_map));
+                }
 
-        if let Some(form) = value.get("form") {
-            let form_map = serde_json::from_value::<HashMap<String, String>>(form.clone())
-                .map_err(serde::de::Error::custom)?;
-            return Ok(Self::Form(form_map));
-        }
+                if map.is_empty() {
+                    "an empty mapping".to_string()
+                } else {
+                    let keys: Vec<String> = map.keys().map(|key| format!("'{key}'")).collect();
+                    format!("a mapping with {}", keys.join(", "))
+                }
+            }
+            serde_json::Value::Number(_) => "a number. Quote it to send it as text".to_string(),
+            serde_json::Value::Bool(_) => "a boolean. Quote it to send it as text".to_string(),
+            serde_json::Value::Array(_) => "a sequence".to_string(),
+            serde_json::Value::Null => "null".to_string(),
+        };
 
-        if let Some(text) = value.as_str() {
-            return Ok(Self::Text(text.to_string()));
-        }
-
-        serde_json::from_value(value).map_err(serde::de::Error::custom)
+        Err(serde::de::Error::custom(format!(
+            "'body' must be text, or a mapping with 'json' or 'form', not {found}"
+        )))
     }
 }
 
@@ -3050,6 +3065,40 @@ services:
         );
 
         assert!(error.contains("'body' at line 7"), "got: {error}");
+    }
+
+    /// A `body` that is not text or a `json`/`form` mapping used to be handed
+    /// back to the same deserializer, which recursed until the stack
+    /// overflowed and aborted epazote at start-up.
+    #[test]
+    fn test_body_of_unsupported_shape_is_refused() {
+        for (body, found) in [
+            ("123", "a number. Quote it to send it as text"),
+            ("true", "a boolean. Quote it to send it as text"),
+            ("[1, 2]", "a sequence"),
+            ("{text: hello}", "a mapping with 'text'"),
+            ("{}", "an empty mapping"),
+        ] {
+            let error = load_error(&format!(
+                "
+services:
+  api:
+    url: https://epazote.io
+    every: 30s
+    method: POST
+    body: {body}
+    expect:
+      status: 200
+"
+            ));
+
+            assert!(
+                error.contains(&format!(
+                    "'body' must be text, or a mapping with 'json' or 'form', not {found}"
+                )),
+                "{body}: {error}"
+            );
+        }
     }
 
     /// `serde_yaml_ng` recognised only lowercase radix prefixes, so `0X10`

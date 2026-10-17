@@ -21,6 +21,10 @@ Changelog
 
   Explicit YAML tags are also handled by the new parser's rules. A `!!binary` string is decoded instead of used verbatim, and a tag that does not fit its field, such as `status: !!str 200`, is refused.
 
+### Fixed
+
+- **A `body` that is not text or a `json`/`form` mapping no longer crashes epazote at start-up**: a number, a boolean, a sequence, or a mapping without `json` or `form` (for example `body: {text: hello}`) was handed back to the body parser, which called itself until the stack overflowed and aborted the process with no hint of which line was at fault. It is now a configuration error that names what was found and points at the line, for example `'body' must be text, or a mapping with 'json' or 'form', not a mapping with 'text'`. A number or boolean meant as text can be quoted (`body: "123"`).
+
 ## 5.0.0 (2026-09-19)
 
 ### Breaking changes
