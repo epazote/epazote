@@ -364,21 +364,32 @@ impl<'de> Deserialize<'de> for BodyType {
         let found = match serde_json::Value::deserialize(deserializer)? {
             serde_json::Value::String(text) => return Ok(Self::Text(text)),
             serde_json::Value::Object(mut map) => {
-                if let Some(json) = map.remove("json") {
-                    return Ok(Self::Json(json));
-                }
+                let json = map.remove("json");
+                let form = map.remove("form");
 
-                if let Some(form) = map.remove("form") {
-                    let form_map = serde_json::from_value::<HashMap<String, String>>(form)
-                        .map_err(serde::de::Error::custom)?;
-                    return Ok(Self::Form(form_map));
-                }
-
-                if map.is_empty() {
-                    "an empty mapping".to_string()
-                } else {
-                    let keys: Vec<String> = map.keys().map(|key| format!("'{key}'")).collect();
-                    format!("a mapping with {}", keys.join(", "))
+                match (json, form) {
+                    (Some(json), None) if map.is_empty() => return Ok(Self::Json(json)),
+                    (None, Some(form)) if map.is_empty() => {
+                        let form_map = serde_json::from_value::<HashMap<String, String>>(form)
+                            .map_err(serde::de::Error::custom)?;
+                        return Ok(Self::Form(form_map));
+                    }
+                    (None, None) if map.is_empty() => "an empty mapping".to_string(),
+                    (None, None) => format!(
+                        "a mapping with {}{}",
+                        quoted_keys(map.keys()),
+                        misplaced_hint(&map)
+                    ),
+                    // Before 5.2.0 `json` won over `form` and any other key
+                    // was dropped, so a `method` or `headers` indented one
+                    // level too deep silently changed the request.
+                    (json, form) => {
+                        return Err(serde::de::Error::custom(extra_body_keys(
+                            json.is_some(),
+                            form.is_some(),
+                            &map,
+                        )));
+                    }
                 }
             }
             serde_json::Value::Number(_) => "a number. Quote it to send it as text".to_string(),
@@ -390,6 +401,65 @@ impl<'de> Deserialize<'de> for BodyType {
         Err(serde::de::Error::custom(format!(
             "'body' must be text, or a mapping with 'json' or 'form', not {found}"
         )))
+    }
+}
+
+/// The keys of a service, to tell an operator who indented one under `body`
+/// where it belongs. A test keeps it in step with `ServiceDetails`.
+const SERVICE_FIELDS: [&str; 10] = [
+    "every",
+    "expect",
+    "follow_redirects",
+    "headers",
+    "max_bytes",
+    "test",
+    "timeout",
+    "url",
+    "method",
+    "body",
+];
+
+fn quoted_keys<'a>(keys: impl IntoIterator<Item = &'a String>) -> String {
+    keys.into_iter()
+        .map(|key| format!("'{key}'"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The error for a `body` mapping that holds more than its one `json` or
+/// `form` key.
+fn extra_body_keys(
+    json: bool,
+    form: bool,
+    others: &serde_json::Map<String, serde_json::Value>,
+) -> String {
+    let mut keys: Vec<String> = others.keys().cloned().collect();
+    keys.extend(json.then(|| "json".to_string()));
+    keys.extend(form.then(|| "form".to_string()));
+    keys.sort();
+
+    format!(
+        "'body' must contain exactly one key, 'json' or 'form', found {}{}",
+        quoted_keys(&keys),
+        misplaced_hint(others)
+    )
+}
+
+/// Points service keys found under `body` back to the service. A nested
+/// `body` gets no hint: moving it up would only collide with this one.
+fn misplaced_hint(keys: &serde_json::Map<String, serde_json::Value>) -> String {
+    let misplaced: Vec<&String> = keys
+        .keys()
+        .filter(|key| *key != "body" && SERVICE_FIELDS.contains(&key.as_str()))
+        .collect();
+
+    if misplaced.is_empty() {
+        String::new()
+    } else {
+        format!(
+            ". Move {} up to the service level, next to 'body'",
+            quoted_keys(misplaced)
+        )
     }
 }
 
@@ -3099,6 +3169,142 @@ services:
                 "{body}: {error}"
             );
         }
+    }
+
+    fn body_error(body: &str) -> String {
+        load_error(&format!(
+            "
+services:
+  api:
+    url: https://epazote.io
+    every: 30s
+    body:
+{body}
+    expect:
+      status: 200
+"
+        ))
+    }
+
+    /// `json` used to win silently, so a config switched to `form` that
+    /// still had its old `json` kept sending JSON.
+    #[test]
+    fn test_body_with_json_and_form_is_refused() {
+        let error = body_error(
+            "      form:
+        user: admin
+      json:
+        user: admin",
+        );
+
+        assert!(
+            error.contains(
+                "'body' must contain exactly one key, 'json' or 'form', found 'form', 'json'"
+            ),
+            "got: {error}"
+        );
+    }
+
+    /// A service key indented one level too deep used to be dropped, so the
+    /// request went out without it.
+    #[test]
+    fn test_service_key_under_body_is_refused_with_a_hint() {
+        let error = body_error(
+            "      json:
+        user: admin
+      method: POST
+      headers:
+        X-Token: secret",
+        );
+
+        assert!(
+            error.contains(
+                "found 'headers', 'json', 'method'. Move 'headers', 'method' up to the service level, next to 'body'"
+            ),
+            "got: {error}"
+        );
+    }
+
+    /// A nested `body` is a duplicate, not a key to move up, and service keys
+    /// alone under `body` get the same hint as beside `json` or `form`.
+    #[test]
+    fn test_body_hint_skips_body_and_covers_service_keys_alone() {
+        let error = body_error(
+            "      json:
+        user: admin
+      body: hello",
+        );
+        assert!(
+            error.contains("found 'body', 'json'") && !error.contains("Move"),
+            "got: {error}"
+        );
+
+        let error = body_error("      method: POST");
+        assert!(
+            error.contains(
+                "not a mapping with 'method'. Move 'method' up to the service level, next to 'body'"
+            ),
+            "got: {error}"
+        );
+    }
+
+    /// A key that belongs nowhere gets no hint, only the list of keys.
+    #[test]
+    fn test_unknown_key_beside_form_is_refused() {
+        let error = body_error(
+            "      form:
+        user: admin
+      jsno:
+        user: admin",
+        );
+
+        assert!(
+            error.contains("found 'form', 'jsno'") && !error.contains("Move"),
+            "got: {error}"
+        );
+    }
+
+    /// `SERVICE_FIELDS` drives the hint above. Read the real field names from
+    /// the derived deserializer so a new service key cannot be missed.
+    #[test]
+    fn test_service_fields_match_service_details() {
+        struct StructFields;
+
+        impl<'de> Deserializer<'de> for StructFields {
+            type Error = serde::de::value::Error;
+
+            fn deserialize_any<V: serde::de::Visitor<'de>>(
+                self,
+                _visitor: V,
+            ) -> Result<V::Value, Self::Error> {
+                Err(serde::de::Error::custom("not a struct"))
+            }
+
+            fn deserialize_struct<V: serde::de::Visitor<'de>>(
+                self,
+                _name: &'static str,
+                fields: &'static [&'static str],
+                _visitor: V,
+            ) -> Result<V::Value, Self::Error> {
+                Err(serde::de::Error::custom(fields.join(",")))
+            }
+
+            serde::forward_to_deserialize_any! {
+                bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+                bytes byte_buf option unit unit_struct newtype_struct seq tuple
+                tuple_struct map enum identifier ignored_any
+            }
+        }
+
+        let fields = ServiceDetails::deserialize(StructFields)
+            .expect_err("StructFields never produces a value")
+            .to_string();
+        let mut fields: Vec<&str> = fields.split(',').collect();
+        let mut known = SERVICE_FIELDS.to_vec();
+        fields.sort_unstable();
+        known.sort_unstable();
+
+        assert_eq!(fields, known, "SERVICE_FIELDS must list every service key");
     }
 
     /// `serde_yaml_ng` recognised only lowercase radix prefixes, so `0X10`

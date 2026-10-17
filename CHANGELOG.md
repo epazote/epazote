@@ -1,6 +1,12 @@
 Changelog
 =========
 
+## 5.2.0 (2026-10-17)
+
+### Changed
+
+- **A `body` mapping must contain exactly one key, `json` or `form`**: when it had `json` or `form`, any other key in it used to be dropped without a word, and `json` silently won when both were present. A mapping with neither was already refused. So a `method` or `headers` indented one level too deep under `body` changed the request while the file looked right. A `method: POST` there sent a GET, and a `headers` block there sent no headers at all, which against an endpoint that needs a token fails every check and runs the fallback. A config that still had its old `json` after switching to `form` kept sending JSON. These are now start-up errors that list the keys found and point at the line, for example `'body' must contain exactly one key, 'json' or 'form', found 'json', 'method'. Move 'method' up to the service level, next to 'body'`. A config that hits this error was already sending something other than what it says. Move the key up to the service, or delete the one you are not using.
+
 ## 5.1.0 (2026-10-17)
 
 ### Changed
