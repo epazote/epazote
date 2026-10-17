@@ -1,6 +1,26 @@
 Changelog
 =========
 
+## 5.1.0 (2026-10-17)
+
+### Changed
+
+- **The configuration file is parsed with `serde-saphyr` instead of `serde_yaml_ng`**: `serde_yaml_ng` is built on `unsafe-libyaml`, a machine translation of libyaml's C code into unsafe Rust whose repository is archived. RustSec now flags it as unmaintained ([RUSTSEC-2024-0449](https://rustsec.org/advisories/RUSTSEC-2024-0449)), with no patched release to move to. `serde-saphyr` is a YAML parser written in safe Rust. Configuration errors now quote the offending lines and point at the column. Two things are deliberately unchanged: YAML 1.1 spellings such as `on`, `off`, `yes` and `no` are still read as strings, and `<<` is still an ordinary key rather than a YAML merge key. Both matter most in `expect.json` and `body.form`, which keep the text that was written.
+
+  **Now rejected at start-up**, with the line that caused it:
+  - **Unquoted values in `expect.json` and anywhere under `body` that used to be text and now read as numbers**. These are values with a leading zero (`zip: 01234`), digit separators (`limit: 1_000`) or an uppercase radix prefix (`mask: 0X1F`). They used to be the strings `"01234"`, `"1_000"` and `"0X1F"`, and the new parser reads them as numbers. Accepting that silently would have changed what a check compares against, which marks a healthy service down and runs its fallback, and what a request sends. The error names the service, the value and its line, and suggests the plain number. Quote the value (`zip: "01234"`) to keep the string, or write the number plainly (`limit: 1000`). The value is refused even when it reaches these fields through an alias. Typed fields, other string fields such as `headers`, and mapping keys are unaffected.
+  - **Duplicate keys in maps** such as `services`, `headers`, `expect.header`, `expect.json` and `body.form`. Before, the last occurrence won and the earlier one was dropped without a word, so a repeated service name left a service unmonitored. Keys that are the same number written differently, such as services named `0x10` and `16`, also count as duplicates. A field written twice, such as two `cmd:` keys in one `if_not`, was already an error.
+  - **A value-less or null entry where a string is required**, such as `X-Empty:` under `headers` or a service named `~`. These used to become the literal text `""`, `~` or `null`. Quote the value (`X-Empty: ""`) to send an empty header.
+  - **`.inf` and `.nan` inside `expect.json` or `body.json`**. JSON cannot represent them, and they used to become `null`.
+
+  **Now accepted**, where they used to be refused:
+  - Quoted numbers and booleans in typed fields, such as `status: "200"` and `follow_redirects: "true"`.
+  - Underscores in numeric fields, such as `max_bytes: 1_000`.
+  - `services: ~` as an empty service list, the same as a bare `services:`.
+  - Integers too large for JSON in `expect.json` and `body.json`, such as `18446744073709551616`. They are now read as approximate floating-point numbers.
+
+  Explicit YAML tags are also handled by the new parser's rules. A `!!binary` string is decoded instead of used verbatim, and a tag that does not fit its field, such as `status: !!str 200`, is refused.
+
 ## 5.0.0 (2026-09-19)
 
 ### Breaking changes

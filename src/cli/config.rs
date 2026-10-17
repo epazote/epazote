@@ -1,10 +1,11 @@
 use anyhow::{Context, Result, anyhow};
 use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_saphyr::granit_parser::{Event, Parser, ScalarStyle};
 use std::str::FromStr;
 use std::{
     collections::{BTreeMap, HashMap},
-    fs::File,
+    fs,
     hash::BuildHasher,
     path::{Path, PathBuf},
     time::Duration,
@@ -26,10 +27,14 @@ impl Config {
     ///
     /// Returns an error if the file cannot be read, parsed, or contains invalid service configurations.
     pub fn new(config_path: PathBuf) -> Result<Self> {
-        let file = File::open(config_path)?;
+        let yaml = fs::read_to_string(config_path)?;
 
-        let config: Self =
-            serde_yaml_ng::from_reader(file).context("Failed to parse config file")?;
+        reject_ambiguous_numbers(&yaml).context("Failed to parse config file")?;
+
+        // Parsed from a string rather than a reader so errors can quote the
+        // offending line.
+        let config: Self = serde_saphyr::from_str_with_options(&yaml, yaml_options())
+            .context("Failed to parse config file")?;
 
         // Validate all services after loading
         for (name, service) in &config.services {
@@ -688,6 +693,268 @@ impl Action {
     }
 }
 
+/// YAML parsing rules for the configuration file.
+///
+/// `strict_booleans` keeps YAML 1.1 spellings such as `yes`, `on` and `off` as
+/// strings. Without it they become booleans wherever the target is untyped, so
+/// `expect.json` would compare a body against `true` where the operator wrote
+/// `on`, and a form value of `yes` would be refused.
+///
+/// Merge keys are read as ordinary keys, as `serde_yaml_ng` did. Expanding them
+/// would rewrite an `expect.json` object containing a literal `<<` key.
+///
+/// Duplicate keys stay an error, the default. The alternative keeps the last
+/// value, which would also accept a second `cmd:` in the same `if_not` block
+/// and silently discard the first.
+fn yaml_options() -> serde_saphyr::Options {
+    serde_saphyr::options! {
+        strict_booleans: true,
+        merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
+    }
+}
+
+/// An unquoted scalar that `serde_yaml_ng` read as a string and `serde-saphyr`
+/// reads as a number.
+#[derive(Clone)]
+struct AmbiguousNumber {
+    text: String,
+    // The number `serde-saphyr` reads, written plainly, to suggest as the fix.
+    number: String,
+    line: usize,
+    column: usize,
+}
+
+enum Node {
+    // `None` while the next node is a key, the key while it is its value.
+    Map(Option<String>),
+    Seq(usize),
+}
+
+struct Frame {
+    node: Node,
+    anchor: usize,
+    // The first ambiguous value inside this collection, so an alias to it can
+    // be judged where it is used.
+    ambiguous: Option<AmbiguousNumber>,
+}
+
+impl Frame {
+    const fn expects_key(&self) -> bool {
+        matches!(self.node, Node::Map(None))
+    }
+}
+
+/// Refuses an unquoted value that changed from a string to a number with the
+/// move to `serde-saphyr`, where the value is untyped JSON: `expect.json` and
+/// anything under `body`.
+///
+/// Up to 5.0 `zip: 01234` there was the string "01234"; `serde-saphyr` reads
+/// the number 1234. Nothing would fail: the check would quietly compare
+/// against another value, mark the service down and run its fallback. Refusing
+/// it at start-up turns that into a change the operator sees, at the line to
+/// quote. Typed fields are unaffected, since the schema decides how they read,
+/// and so are mapping keys, which both parsers read as strings.
+fn reject_ambiguous_numbers(yaml: &str) -> Result<()> {
+    let mut frames: Vec<Frame> = Vec::new();
+    let mut anchors: HashMap<usize, AmbiguousNumber> = HashMap::new();
+
+    for event in Parser::new_from_str(yaml) {
+        // Syntax errors are left to the deserializer, which reports them with
+        // the offending lines.
+        let Ok((event, span)) = event else {
+            return Ok(());
+        };
+
+        match event {
+            Event::MappingStart(_, anchor, _) => frames.push(Frame {
+                node: Node::Map(None),
+                anchor,
+                ambiguous: None,
+            }),
+            Event::SequenceStart(_, anchor, _) => frames.push(Frame {
+                node: Node::Seq(0),
+                anchor,
+                ambiguous: None,
+            }),
+            Event::MappingEnd | Event::SequenceEnd => {
+                if let Some(frame) = frames.pop()
+                    && let Some(found) = frame.ambiguous
+                {
+                    if frame.anchor != 0 {
+                        anchors.insert(frame.anchor, found.clone());
+                    }
+                    note_ambiguous(&mut frames, found);
+                }
+                advance(&mut frames, None);
+            }
+            Event::Scalar(value, style, anchor, tag) => {
+                if matches!(style, ScalarStyle::Plain)
+                    && tag.is_none()
+                    && let Some(number) = ambiguous_number(&value)
+                {
+                    let found = AmbiguousNumber {
+                        text: value.to_string(),
+                        number,
+                        line: span.start.line(),
+                        column: span.start.col() + 1,
+                    };
+                    // Recorded even as a key: an alias can replay it as a value.
+                    if anchor != 0 {
+                        anchors.insert(anchor, found.clone());
+                    }
+                    check_ambiguous(&frames, &found)?;
+                    note_ambiguous(&mut frames, found);
+                }
+                advance(&mut frames, Some(&value));
+            }
+            Event::Alias(anchor) => {
+                if let Some(found) = anchors.get(&anchor).cloned() {
+                    check_ambiguous(&frames, &found)?;
+                    note_ambiguous(&mut frames, found);
+                }
+                advance(&mut frames, None);
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+/// Moves the innermost collection past the node that just ended.
+fn advance(frames: &mut [Frame], key: Option<&str>) {
+    if let Some(frame) = frames.last_mut() {
+        frame.node = match &frame.node {
+            Node::Map(None) => Node::Map(Some(key.unwrap_or("?").to_string())),
+            Node::Map(Some(_)) => Node::Map(None),
+            Node::Seq(index) => Node::Seq(index + 1),
+        };
+    }
+}
+
+/// Marks the innermost collection as holding an ambiguous value, unless the
+/// node is one of its keys.
+fn note_ambiguous(frames: &mut [Frame], found: AmbiguousNumber) {
+    if let Some(frame) = frames.last_mut()
+        && !frame.expects_key()
+    {
+        frame.ambiguous.get_or_insert(found);
+    }
+}
+
+fn check_ambiguous(frames: &[Frame], found: &AmbiguousNumber) -> Result<()> {
+    // Keys, and anything inside a complex key, are read as strings.
+    if frames.iter().any(Frame::expects_key) {
+        return Ok(());
+    }
+
+    let path: Vec<String> = frames
+        .iter()
+        .map(|frame| match &frame.node {
+            Node::Map(key) => key.clone().unwrap_or_default(),
+            Node::Seq(index) => format!("[{index}]"),
+        })
+        .collect();
+
+    let service = match path.as_slice() {
+        [services, service, field, rest @ ..]
+            if services == "services"
+                && (field == "body"
+                    || (field == "expect" && rest.first().is_some_and(|key| key == "json"))) =>
+        {
+            service
+        }
+        _ => return Ok(()),
+    };
+
+    let mut label = String::new();
+    for segment in path.iter().skip(2) {
+        if !label.is_empty() && !segment.starts_with('[') {
+            label.push('.');
+        }
+        label.push_str(segment);
+    }
+
+    let AmbiguousNumber {
+        text,
+        number,
+        line,
+        column,
+    } = found;
+
+    Err(anyhow!(
+        "Service '{service}', '{label}' at line {line}, column {column}: {text} is read as a number, not as the string \"{text}\" it was before 5.1.0. Quote it (\"{text}\") to keep the string, or write {number} for the number."
+    ))
+}
+
+/// The number `serde-saphyr` reads from a plain scalar that `serde_yaml_ng`
+/// read as a string, such as `007`, `0X10` or `1_000`.
+fn ambiguous_number(value: &str) -> Option<String> {
+    if !value.starts_with(|c: char| c.is_ascii_digit() || matches!(c, '+' | '-' | '.'))
+        || number_before_5_1(value)
+    {
+        return None;
+    }
+
+    match serde_saphyr::from_str_with_options(value, yaml_options()).ok()? {
+        // `f64` prints `10.0` as `10`.
+        serde_json::Value::Number(number) => Some(
+            number
+                .as_f64()
+                .filter(|_| number.is_f64())
+                .map_or_else(|| number.to_string(), |float| float.to_string()),
+        ),
+        _ => None,
+    }
+}
+
+const RADIXES: [(&str, u32); 3] = [("0x", 16), ("0o", 8), ("0b", 2)];
+
+/// Whether `serde_yaml_ng` 0.10 read this plain scalar as a number. Mirrors its
+/// `visit_int` and `parse_f64`: radix prefixes are lowercase only, digit
+/// separators are not numbers, and a leading zero makes digits a string.
+fn number_before_5_1(value: &str) -> bool {
+    let digits = value.strip_prefix(['-', '+']).unwrap_or(value);
+    if digits.len() > 1 && digits.starts_with('0') && digits.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+
+    let unpositive = value.strip_prefix('+').unwrap_or(value);
+
+    let unsigned = || {
+        for (prefix, radix) in RADIXES {
+            if let Some(rest) = unpositive.strip_prefix(prefix) {
+                if rest.starts_with(['+', '-']) {
+                    return false;
+                }
+                if u128::from_str_radix(rest, radix).is_ok() {
+                    return true;
+                }
+            }
+        }
+        !unpositive.starts_with(['+', '-']) && unpositive.parse::<u128>().is_ok()
+    };
+
+    let negative = || {
+        for (prefix, radix) in RADIXES {
+            if let Some(rest) = value.strip_prefix('-').and_then(|v| v.strip_prefix(prefix))
+                && i128::from_str_radix(&format!("-{rest}"), radix).is_ok()
+            {
+                return true;
+            }
+        }
+        value.parse::<i128>().is_ok()
+    };
+
+    // `.inf` and `.nan` are left out: `serde-saphyr` refuses them in JSON.
+    let float = || {
+        !(value.starts_with('+') && unpositive.starts_with(['+', '-']))
+            && unpositive.parse::<f64>().is_ok_and(f64::is_finite)
+    };
+
+    unsigned() || negative() || float()
+}
+
 // Default time budget for `if_not` recovery commands.
 const DEFAULT_FALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -866,7 +1133,7 @@ mod tests {
 
     #[test]
     fn test_fallback_timeout_is_configurable() {
-        let config: ServiceDetails = serde_yaml_ng::from_str(
+        let config: ServiceDetails = serde_saphyr::from_str_with_options(
             r#"
 every: 1m
 test: "true"
@@ -876,6 +1143,7 @@ expect:
     cmd: "systemctl restart app"
     timeout: 15m
 "#,
+            yaml_options(),
         )
         .expect("config should parse");
 
@@ -887,7 +1155,7 @@ expect:
 
     #[test]
     fn test_fallback_timeout_rejects_unitless_value() {
-        let result: Result<ServiceDetails, _> = serde_yaml_ng::from_str(
+        let result: Result<ServiceDetails, _> = serde_saphyr::from_str_with_options(
             r#"
 every: 1m
 test: "true"
@@ -897,6 +1165,7 @@ expect:
     cmd: "true"
     timeout: 30
 "#,
+            yaml_options(),
         );
 
         assert!(result.is_err(), "a unitless duration must be rejected");
@@ -2620,5 +2889,544 @@ services:
         assert_eq!(if_not.threshold, Some(3));
         assert_eq!(if_not.stop, Some(2));
         assert_eq!(if_not.cmd.as_deref(), Some("systemctl restart test"));
+    }
+
+    /// YAML 1.1 reads `on`, `off`, `yes` and `no` as booleans. Where the target
+    /// is untyped or a string they must stay the text the operator wrote: an
+    /// endpoint reporting `"state": "on"` must not be compared against `true`.
+    #[test]
+    fn test_yaml_1_1_boolean_spellings_stay_strings() {
+        let yaml = r"
+services:
+  api:
+    url: https://epazote.io
+    every: 30s
+    method: POST
+    body:
+      form:
+        confirm: yes
+    expect:
+      status: 200
+      json:
+        state: on
+        maintenance: off
+";
+
+        let tmp_file = create_config(yaml);
+        let config = Config::new(tmp_file.path().to_path_buf()).expect("Failed to load config");
+        let service = config.services.get("api").expect("Service not found");
+
+        assert_eq!(
+            service.expect.json,
+            Some(json!({ "state": "on", "maintenance": "off" }))
+        );
+        assert_eq!(
+            service.body,
+            Some(BodyType::Form(HashMap::from([(
+                "confirm".to_string(),
+                "yes".to_string()
+            )])))
+        );
+    }
+
+    /// `<<` is data inside `expect.json`, not a YAML merge key, so the
+    /// expected object must keep it.
+    #[test]
+    fn test_merge_key_stays_literal_in_expect_json() {
+        let yaml = r"
+services:
+  api:
+    url: https://epazote.io
+    every: 30s
+    expect:
+      json:
+        <<: {a: 1}
+        b: 2
+";
+
+        let tmp_file = create_config(yaml);
+        let config = Config::new(tmp_file.path().to_path_buf()).expect("Failed to load config");
+        let service = config.services.get("api").expect("Service not found");
+
+        assert_eq!(
+            service.expect.json,
+            Some(json!({ "<<": { "a": 1 }, "b": 2 }))
+        );
+    }
+
+    fn load_error(yaml: &str) -> String {
+        let tmp_file = create_config(yaml);
+        let error =
+            Config::new(tmp_file.path().to_path_buf()).expect_err("the config must be refused");
+        format!("{error:#}")
+    }
+
+    /// Before 5.1.0 `zip: 01234` in `expect.json` was the string "01234".
+    /// Read as the number 1234 the check would quietly stop matching, so the
+    /// value must be refused with the line to quote.
+    #[test]
+    fn test_leading_zero_in_expect_json_is_refused() {
+        let error = load_error(
+            r"
+services:
+  api:
+    url: https://epazote.io
+    every: 30s
+    expect:
+      json:
+        zip: 01234
+",
+        );
+
+        assert!(
+            error.contains("'expect.json.zip' at line 8, column 14")
+                && error.contains(r#"Quote it ("01234")"#)
+                && error.contains("or write 1234"),
+            "the error must point at the value and say how to fix it, got: {error}"
+        );
+    }
+
+    #[test]
+    fn test_digit_separator_in_body_json_is_refused() {
+        let error = load_error(
+            r"
+services:
+  api:
+    url: https://epazote.io
+    every: 30s
+    method: POST
+    body:
+      json:
+        limits: [10, 1_000]
+    expect:
+      status: 200
+",
+        );
+
+        assert!(
+            error.contains("'body.json.limits[1]'") && error.contains("or write 1000"),
+            "the error must name the sequence item, got: {error}"
+        );
+    }
+
+    /// Form values are strings, so the parser would refuse the number with a
+    /// type error that does not say what changed.
+    #[test]
+    fn test_leading_zero_in_body_form_is_refused_with_a_fix() {
+        let error = load_error(
+            r"
+services:
+  api:
+    url: https://epazote.io
+    every: 30s
+    method: POST
+    body:
+      form:
+        pin: 0042
+    expect:
+      status: 200
+",
+        );
+
+        assert!(
+            error.contains("'body.form.pin'") && error.contains(r#"Quote it ("0042")"#),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn test_leading_zero_as_text_body_is_refused() {
+        let error = load_error(
+            r"
+services:
+  api:
+    url: https://epazote.io
+    every: 30s
+    method: POST
+    body: 007
+    expect:
+      status: 200
+",
+        );
+
+        assert!(error.contains("'body' at line 7"), "got: {error}");
+    }
+
+    /// `serde_yaml_ng` recognised only lowercase radix prefixes, so `0X10`
+    /// was a string. As a text body it would now become a number, which the
+    /// body deserializer cannot take.
+    #[test]
+    fn test_uppercase_radix_as_text_body_is_refused() {
+        let error = load_error(
+            r"
+services:
+  api:
+    url: https://epazote.io
+    every: 30s
+    method: POST
+    body: 0X10
+    expect:
+      status: 200
+",
+        );
+
+        assert!(
+            error.contains("'body' at line 7") && error.contains("or write 16"),
+            "got: {error}"
+        );
+    }
+
+    /// Header values are text, but the whole map replayed into `expect.json`
+    /// is untyped, where its leading-zero value would become a number.
+    #[test]
+    fn test_alias_of_map_with_leading_zero_into_expect_json_is_refused() {
+        let error = load_error(
+            r"
+services:
+  api:
+    url: https://epazote.io
+    every: 30s
+    headers: &shared
+      X-Zip: 01234
+    expect:
+      json: *shared
+",
+        );
+
+        assert!(
+            error.contains("'expect.json' at line 7"),
+            "the error must point at the value inside the anchored map, got: {error}"
+        );
+    }
+
+    /// The pre-scan leaves malformed YAML to the deserializer, whose error
+    /// quotes the offending line.
+    #[test]
+    fn test_yaml_syntax_error_is_reported_by_the_parser() {
+        let error = load_error(
+            r"
+services:
+  api:
+    url: https://epazote.io
+    every: [30s
+    expect:
+      status: 200
+",
+        );
+
+        assert!(
+            error.contains("Failed to parse config file") && error.contains("-->"),
+            "the error must come from the parser with a snippet, got: {error}"
+        );
+    }
+
+    /// Keys are strings to both parsers, so a map whose only odd token is a
+    /// key means the same through an alias as where it is defined.
+    #[test]
+    fn test_aliased_map_with_leading_zero_key_is_accepted() {
+        let yaml = r"
+services:
+  api:
+    url: https://epazote.io
+    every: 30s
+    expect:
+      json: &codes
+        01234: keep
+  other:
+    url: https://epazote.io
+    every: 30s
+    expect:
+      json: *codes
+";
+
+        let tmp_file = create_config(yaml);
+        let config = Config::new(tmp_file.path().to_path_buf()).expect("Failed to load config");
+
+        for name in ["api", "other"] {
+            let service = config.services.get(name).expect("Service not found");
+            assert_eq!(service.expect.json, Some(json!({ "01234": "keep" })));
+        }
+    }
+
+    /// Lowercase radix prefixes were numbers before and still are.
+    #[test]
+    fn test_lowercase_radix_in_expect_json_stays_a_number() {
+        let yaml = r"
+services:
+  api:
+    url: https://epazote.io
+    every: 30s
+    expect:
+      json:
+        mask: 0xff
+        mode: 0o17
+        bits: 0b101
+        offset: -0x10
+";
+
+        let tmp_file = create_config(yaml);
+        let config = Config::new(tmp_file.path().to_path_buf()).expect("Failed to load config");
+        let service = config.services.get("api").expect("Service not found");
+
+        assert_eq!(
+            service.expect.json,
+            Some(json!({ "mask": 255, "mode": 15, "bits": 5, "offset": -16 }))
+        );
+    }
+
+    /// `number_before_5_1` mirrors `serde_yaml_ng` 0.10, so its answers are
+    /// that parser's: lowercase radix prefixes only, no digit separators, and
+    /// digits after a leading zero are text.
+    #[test]
+    fn test_number_rules_match_serde_yaml_ng() {
+        for (value, was_number) in [
+            ("10", true),
+            ("-5", true),
+            ("+12", true),
+            ("1.5", true),
+            (".5", true),
+            ("1e3", true),
+            ("0", true),
+            ("0x10", true),
+            ("+0x10", true),
+            ("-0x10", true),
+            ("0o17", true),
+            ("0b101", true),
+            ("010", false),
+            ("-010", false),
+            ("0X10", false),
+            ("0O17", false),
+            ("0B101", false),
+            ("1_000", false),
+            ("0x+1", false),
+            ("0xg", false),
+            ("0b2", false),
+            ("+-1", false),
+            ("inf", false),
+            ("abc", false),
+        ] {
+            assert_eq!(number_before_5_1(value), was_number, "{value}");
+        }
+    }
+
+    #[test]
+    fn test_ambiguous_number_suggests_the_plain_number() {
+        for (value, number) in [
+            ("010", Some("10")),
+            ("-007", Some("-7")),
+            ("0X10", Some("16")),
+            ("0B101", Some("5")),
+            ("1_000", Some("1000")),
+            ("0x10", None),
+            ("10", None),
+            ("1.5", None),
+            ("abc", None),
+            ("010abc", None),
+        ] {
+            assert_eq!(ambiguous_number(value).as_deref(), number, "{value}");
+        }
+    }
+
+    /// The scalar is read as a string where it is defined, but the alias
+    /// replays it into `expect.json`, where it would become a number.
+    #[test]
+    fn test_alias_of_leading_zero_into_expect_json_is_refused() {
+        let error = load_error(
+            r"
+services:
+  api:
+    url: https://epazote.io
+    every: 30s
+    headers:
+      X-Zip: &zip 01234
+    expect:
+      json:
+        zip: *zip
+",
+        );
+
+        assert!(
+            error.contains("'expect.json.zip' at line 7"),
+            "the error must point at the scalar to quote, got: {error}"
+        );
+    }
+
+    /// Typed fields, keys and quoted values were never ambiguous, and ordinary
+    /// numbers still read as numbers.
+    #[test]
+    fn test_unambiguous_values_are_accepted() {
+        let yaml = r#"
+services:
+  api:
+    url: https://epazote.io
+    every: 30s
+    headers:
+      X-Agent: &agent 007
+      X-Copy: *agent
+    expect:
+      json:
+        007: agent
+        zip: "01234"
+        count: 10
+        mask: 0x10
+        ratio: 0.5
+  page:
+    url: https://epazote.io
+    every: 30s
+    expect:
+      body: 0200
+"#;
+
+        let tmp_file = create_config(yaml);
+        let config = Config::new(tmp_file.path().to_path_buf()).expect("Failed to load config");
+        let service = config.services.get("api").expect("Service not found");
+
+        assert_eq!(
+            service.headers,
+            Some(HashMap::from([
+                ("X-Agent".to_string(), "007".to_string()),
+                ("X-Copy".to_string(), "007".to_string()),
+            ]))
+        );
+        assert_eq!(
+            service.expect.json,
+            Some(json!({
+                "007": "agent",
+                "zip": "01234",
+                "count": 10,
+                "mask": 16,
+                "ratio": 0.5
+            }))
+        );
+
+        let page = config.services.get("page").expect("Service not found");
+        assert_eq!(page.expect.body.as_deref(), Some("0200"));
+    }
+
+    /// `!!binary` marks base64 data. It used to be ignored, leaving the
+    /// encoded text; it is now decoded, in typed and untyped fields alike.
+    #[test]
+    fn test_binary_tag_is_decoded() {
+        let yaml = r"
+services:
+  job:
+    test: !!binary ZWNobyBoaQ==
+    every: 30s
+    expect:
+      status: 0
+  api:
+    url: https://epazote.io
+    every: 30s
+    expect:
+      json:
+        greeting: !!binary aGVsbG8=
+";
+
+        let tmp_file = create_config(yaml);
+        let config = Config::new(tmp_file.path().to_path_buf()).expect("Failed to load config");
+
+        let job = config.services.get("job").expect("Service not found");
+        assert_eq!(job.test.as_deref(), Some("echo hi"));
+
+        let api = config.services.get("api").expect("Service not found");
+        assert_eq!(api.expect.json, Some(json!({ "greeting": "hello" })));
+    }
+
+    /// A tag used to be ignored in favour of the field's type. It is now
+    /// honoured, so one that contradicts the field is refused.
+    #[test]
+    fn test_tag_that_does_not_fit_the_field_is_refused() {
+        let error = load_error(
+            r"
+services:
+  api:
+    url: https://epazote.io
+    every: 30s
+    expect:
+      status: !!str 200
+",
+        );
+
+        assert!(error.contains("line 7"), "got: {error}");
+    }
+
+    /// A tag that agrees with the field is accepted, and `!!str` is a way to
+    /// keep a leading-zero value a string in untyped JSON.
+    #[test]
+    fn test_tag_that_fits_the_field_is_accepted() {
+        let yaml = r"
+services:
+  api:
+    url: https://epazote.io
+    every: 30s
+    expect:
+      status: !!int 200
+      json:
+        version: !!str 1.0
+        zip: !!str 01234
+";
+
+        let tmp_file = create_config(yaml);
+        let config = Config::new(tmp_file.path().to_path_buf()).expect("Failed to load config");
+        let service = config.services.get("api").expect("Service not found");
+
+        assert_eq!(service.expect.status, Some(200));
+        assert_eq!(
+            service.expect.json,
+            Some(json!({ "version": "1.0", "zip": "01234" }))
+        );
+    }
+
+    /// A repeated service name used to keep only the last definition, so the
+    /// first service was never monitored and nothing said so.
+    #[test]
+    fn test_duplicate_service_name_fails_config_load() {
+        let yaml = r"
+services:
+  web:
+    url: https://epazote.io
+    every: 30s
+    expect:
+      status: 200
+  web:
+    url: https://epazote.io/health
+    every: 30s
+    expect:
+      status: 200
+";
+
+        let tmp_file = create_config(yaml);
+        let error = Config::new(tmp_file.path().to_path_buf())
+            .expect_err("a duplicate service name must halt startup");
+
+        assert!(
+            format!("{error:#}").contains("duplicate"),
+            "the error must name the duplicate, got: {error:#}"
+        );
+    }
+
+    /// A second `cmd` in the same block must not quietly replace the first.
+    #[test]
+    fn test_duplicate_fallback_key_fails_config_load() {
+        let yaml = r"
+services:
+  web:
+    url: https://epazote.io
+    every: 30s
+    expect:
+      status: 200
+      if_not:
+        cmd: systemctl restart web
+        cmd: systemctl restart nginx
+";
+
+        let tmp_file = create_config(yaml);
+        let error = Config::new(tmp_file.path().to_path_buf())
+            .expect_err("a duplicate fallback key must halt startup");
+
+        assert!(
+            format!("{error:#}").contains("duplicate"),
+            "the error must name the duplicate, got: {error:#}"
+        );
     }
 }
