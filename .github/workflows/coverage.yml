@@ -5,7 +5,7 @@ on:
   workflow_call:
     secrets:
       CODECOV_TOKEN:
-        required: true
+        required: false
 
 permissions:
   contents: read
@@ -19,13 +19,15 @@ jobs:
     name: Coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust-toolchain
         with:
           components: llvm-tools-preview
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: coverage
 
@@ -48,8 +50,19 @@ jobs:
         run: grcov . --binary-path target/debug/ -s . -t lcov --branch --ignore-not-existing
           --ignore '../**' --ignore '/*' -o coverage.lcov
 
+      - name: Check Codecov configuration
+        id: codecov
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        run: |
+          if [[ -n "${CODECOV_TOKEN}" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Upload to codecov.io
-        uses: codecov/codecov-action@v6
+        if: steps.codecov.outputs.enabled == 'true'
+        continue-on-error: true
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v6
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         with:
@@ -57,4 +70,5 @@ jobs:
           flags: rust
 
       - name: Coveralls GitHub Action
-        uses: coverallsapp/github-action@v2
+        continue-on-error: true
+        uses: coverallsapp/github-action@8d6379e14d29928660c4ba802d8e85393440b329 # v2

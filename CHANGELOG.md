@@ -1,6 +1,24 @@
 Changelog
 =========
 
+## 5.2.1 (2026-11-10)
+
+### Release
+
+- Replace tag-first deployment with CI-gated, tag-last `just release`.
+- Preserve the four Linux/macOS target archives and RPM/DEB packages for both
+  Linux architectures, using shared build and package validation actions.
+- Add the verified crate asset, SHA256SUMS, build provenance, and crates.io
+  Trusted Publishing without a stored-token fallback.
+- Refresh compatible dependencies, including serde-saphyr 2.1, Tokio 1.54,
+  and the locked TLS, compression, and Unicode dependencies. This resolves
+  [RUSTSEC-2026-0418](https://rustsec.org/advisories/RUSTSEC-2026-0418)
+  (`libz-sys` build script leaks environment variables in the build directory)
+  and
+  [RUSTSEC-2026-0382](https://rustsec.org/advisories/RUSTSEC-2026-0382)
+  (`rustls-webpki` certificate verification may accept distrusted intermediates),
+  which failed the scheduled security audit.
+
 ## 5.2.0 (2026-10-17)
 
 ### Changed

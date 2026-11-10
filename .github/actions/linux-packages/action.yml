@@ -1,0 +1,89 @@
+name: Linux packages
+description: Build and inspect Epazote RPM and DEB packages from the release binary.
+inputs:
+  target:
+    description: Native Linux Rust target triple.
+    required: true
+  package:
+    description: Package and binary name.
+    required: true
+  out:
+    description: Output directory for the RPM and DEB.
+    required: false
+    default: dist
+runs:
+  using: composite
+  steps:
+    - name: Install package tools
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update -y
+        sudo apt-get install -y rpm cpio
+        cargo install cargo-generate-rpm --version 0.21.0 --locked
+        cargo install cargo-deb --version 3.8.0 --locked
+
+    - id: info
+      uses: ./.github/actions/crate-info
+
+    - name: Build and check packages
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+        PACKAGE: ${{ inputs.package }}
+        OUT: ${{ inputs.out }}
+        VERSION: ${{ steps.info.outputs.version }}
+      run: |
+        set -euo pipefail
+        case "${TARGET}" in
+          x86_64-unknown-linux-musl) deb_arch=amd64; rpm_arch=x86_64 ;;
+          aarch64-unknown-linux-musl) deb_arch=arm64; rpm_arch=aarch64 ;;
+          *) echo "::error::Unsupported native Linux target ${TARGET}."; exit 1 ;;
+        esac
+        [[ "$(uname -m)" == "${rpm_arch}" ]]
+        strip -s "target/${TARGET}/release/${PACKAGE}"
+        mkdir -p target/release "${OUT}"
+        ln -sf "../${TARGET}/release/${PACKAGE}" "target/release/${PACKAGE}"
+        rpm="${PACKAGE}-${VERSION}-1.${rpm_arch}.rpm"
+        deb="${PACKAGE}_${VERSION}-1_${deb_arch}.deb"
+        # Remove these exact outputs so stale files cannot satisfy this invocation.
+        rm -f "target/generate-rpm/${rpm}" "target/debian/${deb}" "target/${TARGET}/debian/${deb}"
+        cargo generate-rpm
+        cargo deb --no-build --target "${TARGET}"
+        # cargo-deb 3.8.0 writes target/debian and makes a deprecated target-specific copy.
+        deb_path="target/debian/${deb}"
+        if [[ ! -f "${deb_path}" ]]; then
+          deb_path="target/${TARGET}/debian/${deb}"
+        fi
+        cp "target/generate-rpm/${rpm}" "${deb_path}" "${OUT}/"
+        shopt -s nullglob
+        rpms=("${OUT}"/*.rpm)
+        debs=("${OUT}"/*.deb)
+        [[ ${#rpms[@]} -eq 1 && ${#debs[@]} -eq 1 ]]
+        [[ "$(basename "${rpms[0]}")" == "${rpm}" ]]
+        [[ "$(basename "${debs[0]}")" == "${deb}" ]]
+        [[ "$(dpkg-deb --field "${OUT}/${deb}" Package)" == "${PACKAGE}" ]]
+        [[ "$(dpkg-deb --field "${OUT}/${deb}" Version)" == "${VERSION}-1" ]]
+        [[ "$(dpkg-deb --field "${OUT}/${deb}" Architecture)" == "${deb_arch}" ]]
+        [[ "$(rpm -qp --queryformat '%{NAME} %{VERSION} %{RELEASE} %{ARCH}' "${OUT}/${rpm}")" == "${PACKAGE} ${VERSION} 1 ${rpm_arch}" ]]
+        # Extract without installing packages or executing service scripts.
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "${tmp}"' EXIT
+        mkdir "${tmp}/rpm" "${tmp}/deb" "${tmp}/control"
+        rpm2cpio "${OUT}/${rpm}" | (cd "${tmp}/rpm" && cpio -idm --quiet)
+        dpkg-deb --extract "${OUT}/${deb}" "${tmp}/deb"
+        dpkg-deb --control "${OUT}/${deb}" "${tmp}/control"
+        for script in postinst prerm postrm; do
+          test -x "${tmp}/control/${script}"
+          cmp "contrib/debian/${script}" "${tmp}/control/${script}"
+        done
+        for format in rpm deb; do
+          payload="${tmp}/${format}"
+          [[ "$(stat -c '%a' "${payload}/usr/bin/${PACKAGE}")" == 755 ]]
+          [[ "$(stat -c '%a' "${payload}/etc/systemd/system/epazote.service")" == 644 ]]
+          [[ "$(stat -c '%a' "${payload}/etc/epazote/epazote.env")" == 640 ]]
+          cmp "target/${TARGET}/release/${PACKAGE}" "${payload}/usr/bin/${PACKAGE}"
+          cmp contrib/systemd/epazote.service "${payload}/etc/systemd/system/epazote.service"
+          cmp contrib/systemd/epazote.env.example "${payload}/etc/epazote/epazote.env"
+          test ! -e "${payload}/etc/epazote/epazote.yml"
+        done

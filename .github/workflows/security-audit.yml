@@ -2,25 +2,17 @@
 name: Security Audit
 
 on:
+  workflow_call:
   workflow_dispatch:
   schedule:
     # Run daily at 00:00 UTC
     - cron: '0 0 * * *'
-  pull_request:
-    paths:
-      - '**/Cargo.toml'
-      - '**/Cargo.lock'
-      - '.github/workflows/security-audit.yml'
-  push:
-    branches:
-      - main
-      - develop
 
 permissions:
   contents: read
 
 concurrency:
-  group: security-audit-${{ github.ref }}
+  group: ${{ github.workflow }}-security-audit-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -28,11 +20,13 @@ jobs:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust-toolchain
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
         with:
           tool: cargo-audit
 

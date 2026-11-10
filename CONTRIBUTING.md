@@ -70,7 +70,13 @@ The original poster or the maintainer's of **epazote** may close an issue at any
 
 ## Pull Request Process
 
-- Make sure the destination branch is **develop**, We are using git-flow.
+- Contributions and dependency updates target **sandbox**.
+- A signed version bump in `Cargo.toml` and `Cargo.lock` is the final
+  release-preparation commit.
+- After `CI OK` passes, fast-forward **develop** to that exact green SHA.
+- **main** advances only after the release succeeds and develop's exact-SHA
+  `CI OK` job succeeds; coverage is non-gating.
+- See [.github/RELEASING.md](.github/RELEASING.md) for the operator command, settings, and recovery.
 
 
 [so]: http://stackoverflow.com/questions/tagged/epazote

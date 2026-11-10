@@ -35,6 +35,8 @@ telemetry-enabled binary without requiring another rebuild. Local pretty and
 JSON logging are always available, including in default builds.
 
 Or download the latest release from the [releases](https://github.com/epazote/epazote/releases)
+See [Releasing and verifying downloads](.github/RELEASING.md#verification-and-limits)
+for checksums, provenance, and the maintainer release process.
 
 
 ## Basic example
