@@ -10,6 +10,9 @@ Changelog
   Linux architectures, using shared build and package validation actions.
 - Add the verified crate asset, SHA256SUMS, build provenance, and crates.io
   Trusted Publishing without a stored-token fallback.
+- Use `rpm2archive` for payload validation on Ubuntu 24.04, where `rpm2cpio`
+  fails on packages without the legacy archive-size tag; retain all payload checks.
+- Update the SHA-pinned Codecov action to v7.1.1.
 - Refresh compatible dependencies, including serde-saphyr 2.1, Tokio 1.54,
   and the locked TLS, compression, and Unicode dependencies. This resolves
   [RUSTSEC-2026-0418](https://rustsec.org/advisories/RUSTSEC-2026-0418)

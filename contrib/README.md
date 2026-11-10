@@ -29,6 +29,8 @@ The RPM is under `target/generate-rpm/`; the DEB is under `target/debian/`.
 The pinned cargo-deb 3.8.0 also makes a deprecated compatibility copy under
 `target/<target>/debian/`, which CI uses only as a fallback. Checks validate package
 metadata, payloads, modes, and Debian control scripts without installing packages.
+RPM inspection uses `rpm2archive` and `tar`: Ubuntu 24.04's `rpm2cpio` requires
+the legacy archive-size tag omitted by the pinned packager.
 
 Notes:
 

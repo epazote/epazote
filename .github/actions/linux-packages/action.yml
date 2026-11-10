@@ -19,7 +19,7 @@ runs:
       run: |
         set -euo pipefail
         sudo apt-get update -y
-        sudo apt-get install -y rpm cpio
+        sudo apt-get install -y rpm
         cargo install cargo-generate-rpm --version 0.21.0 --locked
         cargo install cargo-deb --version 3.8.0 --locked
 
@@ -35,6 +35,7 @@ runs:
         VERSION: ${{ steps.info.outputs.version }}
       run: |
         set -euo pipefail
+        trap 'echo "::error::Package validation failed at line ${LINENO}: ${BASH_COMMAND}" >&2' ERR
         case "${TARGET}" in
           x86_64-unknown-linux-musl) deb_arch=amd64; rpm_arch=x86_64 ;;
           aarch64-unknown-linux-musl) deb_arch=arm64; rpm_arch=aarch64 ;;
@@ -70,7 +71,8 @@ runs:
         tmp="$(mktemp -d)"
         trap 'rm -rf "${tmp}"' EXIT
         mkdir "${tmp}/rpm" "${tmp}/deb" "${tmp}/control"
-        rpm2cpio "${OUT}/${rpm}" | (cd "${tmp}/rpm" && cpio -idm --quiet)
+        # RPM 4.18 rpm2cpio fails without LONGARCHIVESIZE, even after writing the payload.
+        rpm2archive -n "${OUT}/${rpm}" | tar -xpf - -C "${tmp}/rpm"
         dpkg-deb --extract "${OUT}/${deb}" "${tmp}/deb"
         dpkg-deb --control "${OUT}/${deb}" "${tmp}/control"
         for script in postinst prerm postrm; do
